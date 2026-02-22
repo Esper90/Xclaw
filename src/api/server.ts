@@ -15,6 +15,7 @@ export function startApiServer(): void {
 
     // ── Health check (no auth) ─────────────────────────────────────────────
     app.get("/health", (_req, res) => {
+        console.log(`[health] Ping received at ${new Date().toISOString()}`);
         res.json({ status: "ok", service: "gravity-claw", ts: new Date().toISOString() });
     });
 
@@ -28,7 +29,8 @@ export function startApiServer(): void {
     });
 
     const port = parseInt(config.PORT, 10);
-    app.listen(port, () => {
-        console.log(`🌐 REST API listening on port ${port}`);
+    const host = "0.0.0.0"; // Bind to all interfaces for Railway
+    app.listen(port, host, () => {
+        console.log(`🌐 REST API listening on ${host}:${port}`);
     });
 }
