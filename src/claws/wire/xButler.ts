@@ -653,17 +653,25 @@ export async function searchDMs(
     console.log(`[DM Search DEBUG] Broad search — extracted target: "${cleanQuery}" across ${allDMs.length} DMs — usernames resolved: ${allDMs.filter(d => d.senderUsername).length}/${allDMs.length}`);
     console.log(`[DM Search DEBUG] All senderUsernames:`, allDMs.map(d => d.senderUsername ?? `<null:${d.senderId}>`).join(", "));
 
-    // ── Step 1: Direct pre-filter (username / text substring) ────────────────
+    // ── Step 1: Direct pre-filter ────────────────────────────────────────────
+    // For person queries ("from sage") only match on senderUsername — NEVER on
+    // text content, because the word "sage" (or any name) can appear in unrelated
+    // DM bodies and cause false positives (e.g. AdsSupport mentioning "sage advice").
+    // For topic/content queries ("about advertising") match on text as well.
+    const personQuery = isPersonQuery(query);
     if (cleanQuery.length >= 2) {
         const directMatches = allDMs
             .map((dm, i) => ({
                 i,
-                match:
-                    (dm.senderUsername ?? "").toLowerCase().includes(cleanQuery) ||
-                    dm.text.toLowerCase().includes(cleanQuery),
+                match: personQuery
+                    ? (dm.senderUsername ?? "").toLowerCase().includes(cleanQuery)
+                    : (dm.senderUsername ?? "").toLowerCase().includes(cleanQuery) ||
+                      dm.text.toLowerCase().includes(cleanQuery),
             }))
             .filter(x => x.match)
             .map(x => x.i);
+
+        console.log(`[DM Search DEBUG] Direct filter (${personQuery ? "username-only" : "username+text"}): ${directMatches.length} match(es) for "${cleanQuery}"`);
 
         if (directMatches.length > 0) {
             // Found via direct match — no Gemini call needed
@@ -688,8 +696,8 @@ export async function searchDMs(
     // SKIP Gemini for person-name queries ("from sage", "by alex", etc.).
     // When a person is targeted but not found in the fetched DMs, returning []
     // is far better than letting Gemini pick a semantically unrelated sender.
-    if (isPersonQuery(query)) {
-        console.log(`[DM Search DEBUG] Person query — skipping Gemini, returning not-found for "${cleanQuery}"`);
+    if (personQuery) {
+        console.log(`[DM Search DEBUG] Person query — no username match found, returning not-found for "${cleanQuery}"`);
         return [];
     }
 
