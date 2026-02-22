@@ -397,9 +397,50 @@ export async function searchDMs(
     const allDMs = await fetchDMs(xcUserId, 50, undefined, /* cheapMode */ true, /* rawMode */ true);
     if (allDMs.length === 0) return [];
 
-    // Build a compact summary of all DMs for Gemini to reason over
+    // ── Step 1: Direct pre-filter (username / text substring) ────────────────
+    // Extract the core name/keyword from common patterns like "from sage", "@sageisthename1"
+    // This runs before Gemini and is immune to username expansion failures.
+    const cleanQuery = query
+        .toLowerCase()
+        .replace(/^(from|by|@)\s+/i, "")  // strip "from ", "by ", "@"
+        .replace(/@/g, "")                 // strip any remaining @
+        .trim();
+
+    if (cleanQuery.length >= 2) {
+        const directMatches = allDMs
+            .map((dm, i) => ({
+                i,
+                match:
+                    (dm.senderUsername ?? "").toLowerCase().includes(cleanQuery) ||
+                    dm.text.toLowerCase().includes(cleanQuery),
+            }))
+            .filter(x => x.match)
+            .map(x => x.i);
+
+        if (directMatches.length > 0) {
+            // Found via direct match — no Gemini call needed
+            const matched: ButlerDM[] = [];
+            let replyCount = 0;
+            for (const idx of directMatches) {
+                const dm = allDMs[idx];
+                let suggestedReply = dm.suggestedReply;
+                if (!suggestedReply && replyCount < MAX_REPLY_SUGGESTIONS) {
+                    try {
+                        suggestedReply = await suggestReply(dm.text, dm.matchedMemories, true);
+                        replyCount++;
+                    } catch { /* non-fatal */ }
+                }
+                matched.push({ ...dm, suggestedReply });
+            }
+            return matched;
+        }
+    }
+
+    // ── Step 2: Gemini semantic search (fallback for complex queries) ─────────
+    // Build a compact summary — includes both username AND senderId so Gemini
+    // can still reason about numeric IDs if the username expansion failed.
     const summaries = allDMs.map((dm, i) =>
-        `[${i}] from:${dm.senderUsername ?? dm.senderId} text:"${dm.text.slice(0, 150).replace(/"/g, "'")}"`
+        `[${i}] username:${dm.senderUsername ?? "unknown"} senderId:${dm.senderId} text:"${dm.text.slice(0, 150).replace(/"/g, "'")}"`
     ).join("\n");
 
     const ai = new GoogleGenerativeAI(config.GEMINI_API_KEY);
@@ -409,14 +450,12 @@ export async function searchDMs(
         `You are a DM search engine. The user wants to find DMs matching this description:
 "${query.replace(/"/g, "'")}"
 
-Here are the available DMs (indexed from 0). Each shows the sender username AND message text:
+Here are the available DMs (indexed from 0):
 ${summaries}
 
 Return a JSON array of index numbers that match the user's description.
-Match on EITHER the sender's name/username OR the message content — whichever fits.
-Be generous — partial name matches count (e.g. query "from sage" matches sender "sageisthename1").
+Match on username OR message content. Be generous with partial matches.
 If none match, return [].
-Examples: [0,2,5] or []
 Return ONLY the JSON array, no explanation.`
     );
 
@@ -430,18 +469,8 @@ Return ONLY the JSON array, no explanation.`
             );
         }
     } catch {
-        // If Gemini output is unparseable, fall back to simple text + username search
-        const q = query.toLowerCase().replace(/^from\s+/i, "").replace(/@/g, "");
-        matchedIndices = allDMs
-            .map((dm, i) => ({
-                i,
-                match:
-                    dm.text.toLowerCase().includes(q) ||
-                    (dm.senderUsername ?? "").toLowerCase().includes(q) ||
-                    dm.senderId.toLowerCase().includes(q),
-            }))
-            .filter(x => x.match)
-            .map(x => x.i);
+        // Gemini output unparseable — nothing to return, direct filter already ran above
+        matchedIndices = [];
     }
 
     if (matchedIndices.length === 0) return [];
