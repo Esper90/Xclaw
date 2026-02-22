@@ -420,8 +420,7 @@ function extractDMTarget(query: string): string {
 
     // Fallback: strip common filler prefixes, take first meaningful word
     return lower
-        .replace(/^(bring me|can you|find|show|pull up|give me|open|get).*(dm|message|dms? from|dms? by)/i, "")
-        .replace(/^(the|a|latest|recent|my)\s+/i, "")
+        .replace(/^(bring me|can you|find|show|pull|give me|open|the latest|recent).*(dm|message|dms? from|dms? by)/i, "")
         .trim()
         .replace(/^@/, "")
         .split(/\s+/)[0] ?? "";
@@ -429,56 +428,74 @@ function extractDMTarget(query: string): string {
 
 /**
  * For "from <person>" queries: resolve the person via X API user lookup
- * (exact handle first, then search fallback) then fetch only THEIR conversation.
+ * (exact handle first, then v1 search fallback) then fetch only THEIR conversation.
  * senderUsername is guaranteed correct — no expansion needed.
  */
 async function findDMsFromPerson(query: string): Promise<ButlerDM[]> {
     const targetName = extractDMTarget(query);
-    if (!targetName || targetName.length < 2) return [];
+    console.log(`[DM Search DEBUG] Raw query: "${query}" → extracted targetName: "${targetName}"`);
 
-    console.log(`[butler:search] Looking for DMs from: "${targetName}"`);
+    if (!targetName || targetName.length < 2) {
+        console.log(`[DM Search DEBUG] Target name too short, skipping`);
+        return [];
+    }
+
     const client = getClient();
     let targetUser: { id: string; username: string } | null = null;
 
-    // 1. Exact handle match (fastest — works when user typed @sageisthename1)
+    // Step 1: exact handle (fastest — works when user types @sageisthename1)
     try {
-        const exact = await client.v2.userByUsername(targetName, {
-            "user.fields": ["username", "verified"],
-        } as any);
-        if (exact.data) targetUser = exact.data;
-    } catch { /* 404 expected for partial names */ }
+        console.log(`[DM Search DEBUG] Trying exact userByUsername("${targetName}")`);
+        const exact = await client.v2.userByUsername(targetName);
+        if (exact.data) {
+            targetUser = exact.data;
+            console.log(`[DM Search DEBUG] Exact match found: @${targetUser.username} (id: ${targetUser.id})`);
+        }
+    } catch (e: any) {
+        console.log(`[DM Search DEBUG] userByUsername failed (expected for "${targetName}"): ${e?.message ?? e}`);
+    }
 
-    // 2. User search fallback — THIS is what finds "sageisthename1" from "sage"
+    // Step 2: v1 search — iterates paginator correctly with for-await
     if (!targetUser) {
         try {
+            console.log(`[DM Search DEBUG] Falling back to v1.searchUsers("${targetName}", {count:5})`);
             const searchPaginator = await client.v1.searchUsers(targetName, { count: 5 } as any);
-            const firstUser = searchPaginator.users?.[0] ?? null;
-            if (firstUser) {
-                targetUser = { id: (firstUser as any).id_str ?? String((firstUser as any).id), username: (firstUser as any).screen_name };
-                console.log(`[butler:search] User search resolved "${targetName}" → @${targetUser.username}`);
+            for await (const user of searchPaginator) {
+                const u = user as any;
+                targetUser = { id: u.id_str ?? String(u.id), username: u.screen_name ?? u.username };
+                console.log(`[DM Search DEBUG] Search found: @${targetUser.username} (id: ${targetUser.id})`);
+                break;  // take the first (most relevant)
             }
-        } catch (e) {
-            console.log(`[butler:search] User search also failed for "${targetName}":`, (e as any)?.message);
+        } catch (e: any) {
+            console.log(`[DM Search DEBUG] v1.searchUsers failed: ${e?.message ?? e}`);
         }
     }
 
     if (!targetUser) {
-        console.log(`[butler:search] No X user found for "${targetName}"`);
+        console.log(`[DM Search DEBUG] ❌ No user found for "${targetName}" at all`);
         return [];
     }
 
-    // 3. Fetch ONLY this person's conversation (newest first, guaranteed username)
+    // Step 3: fetch ONLY this conversation
     const myId = await getMyXUserId();
     try {
+        console.log(`[DM Search DEBUG] Fetching DMs with participant ${targetUser.id} (@${targetUser.username})`);
         const timeline = await client.v2.listDmEventsWithParticipant(targetUser.id, {
             max_results: 20,
             "dm_event.fields": ["created_at", "sender_id", "dm_conversation_id", "text"],
-            event_types: "MessageCreate",
+            expansions: ["sender_id"],
+            "user.fields": ["username", "verified"],
         } as any);
         const events = ((timeline as any).events ?? []) as LocalDMEvent[];
-        const inbound = events.filter(ev => ev.sender_id !== myId && ev.text?.trim());
+        console.log(`[DM Search DEBUG] Got ${events.length} raw events from this conversation`);
 
-        if (inbound.length === 0) return [];
+        const inbound = events.filter(ev => ev.sender_id !== myId && ev.text?.trim());
+        console.log(`[DM Search DEBUG] ${inbound.length} inbound events after filtering own messages`);
+
+        if (inbound.length === 0) {
+            console.log(`[DM Search DEBUG] ⚠ 0 inbound events — DM exists in X app but not surfaced by API?`);
+            return [];
+        }
 
         const matched: ButlerDM[] = [];
         let replyCount = 0;
@@ -500,9 +517,10 @@ async function findDMsFromPerson(query: string): Promise<ButlerDM[]> {
                 suggestedReply,
             });
         }
+        console.log(`[DM Search DEBUG] ✅ Returning ${matched.length} DMs from @${targetUser.username}`);
         return matched;
-    } catch (e) {
-        console.log(`[butler:search] listDmEventsWithParticipant failed for @${targetUser.username}:`, (e as any)?.message);
+    } catch (e: any) {
+        console.error(`[DM Search DEBUG] listDmEventsWithParticipant crashed:`, e?.message ?? e);
         return [];
     }
 }
@@ -523,18 +541,23 @@ export async function searchDMs(
     xcUserId: string,
     query: string
 ): Promise<ButlerDM[]> {
+    console.log(`[DM Search DEBUG] === START searchDMs query: "${query}" ===`);
+
     // ── Step 0: Person-specific path (most accurate) ─────────────────────────
-    // Handles "from X" / "by X" patterns: resolves the person, fetches their DMs directly.
     const personMatches = await findDMsFromPerson(query);
-    if (personMatches.length > 0) return personMatches;
+    if (personMatches.length > 0) {
+        console.log(`[DM Search DEBUG] SUCCESS — returning ${personMatches.length} DMs from person`);
+        return personMatches;
+    }
+
+    console.log(`[DM Search DEBUG] findDMsFromPerson returned [] — falling back to broad rawMode search`);
 
     // ── Broad search: fetch all recent DMs (rawMode — no Pinecone scoring) ────
-    // Batch user lookup in fetchDMs guarantees senderUsername is always populated.
     const allDMs = await fetchDMs(xcUserId, 50, undefined, /* cheapMode */ true, /* rawMode */ true);
     if (allDMs.length === 0) return [];
 
     const cleanQuery = extractDMTarget(query);
-    console.log(`[butler:search] Broad search — extracted target: "${cleanQuery}"`);
+    console.log(`[DM Search DEBUG] Broad search — extracted target: "${cleanQuery}" across ${allDMs.length} DMs`);
 
     // ── Step 1: Direct pre-filter (username / text substring) ────────────────
     if (cleanQuery.length >= 2) {
