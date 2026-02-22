@@ -1,5 +1,5 @@
 {
-  "name": "gravity-claw",
+  "name": "xclaw",
   "version": "1.0.0",
   "description": "Self-hosted multi-tenant Telegram AI bot — CLAWS framework",
   "main": "dist/index.js",
