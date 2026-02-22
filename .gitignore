@@ -1,0 +1,27 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Downloads (temp voice files)
+downloads/
+
+# Secrets and keys
+*.json
+!package.json
+!package-lock.json
+!railway.toml
