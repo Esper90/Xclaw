@@ -47,6 +47,17 @@ async function main(): Promise<void> {
         await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
     });
     // ── 7. Launch bot (long-polling) ─────────────────────────────────────────
+    // Graceful shutdown: tell Telegram to stop polling BEFORE the process exits.
+    // Without this, Railway kills the old container mid-poll and the new instance
+    // gets a 409 Conflict because Telegram thinks polling is still active.
+    const shutdown = async (signal: string) => {
+        console.log(`[bot] ${signal} received — stopping bot gracefully`);
+        await bot.stop();
+        process.exit(0);
+    };
+    process.once("SIGTERM", () => shutdown("SIGTERM"));
+    process.once("SIGINT",  () => shutdown("SIGINT"));
+
     await bot.start({
         onStart: (info) => {
             console.log(`🤖 Xclaw is online — @${info.username}`);
