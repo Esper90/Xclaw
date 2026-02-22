@@ -81,18 +81,17 @@ export async function handleVoice(ctx: BotContext): Promise<void> {
             console.warn(`[voiceHandler] TTS failed, falling back to text:`, ttsErr);
         }
 
-        // 5. Send text reply only if TTS failed
-        if (!ttsSent) {
-            await ctx.api.editMessageText(
-                ctx.chat!.id,
-                processing.message_id,
-                `🎙️ _"${transcript}"_\n\n${replyText}`,
-                { parse_mode: "Markdown" }
-            );
-        } else {
-            // Delete the "Transcribing..." placeholder — audio message replaces it
-            await ctx.api.deleteMessage(ctx.chat!.id, processing.message_id).catch(() => { });
-        }
+        // 5. Always update the text message with the reply, so user can see it (esp. for drafts)
+        await ctx.api.editMessageText(
+            ctx.chat!.id,
+            processing.message_id,
+            `🎙️ _"${transcript}"_\n\n${replyText}`,
+            { parse_mode: "Markdown" }
+        ).catch(() => {
+            // If editing fails (e.g. message already deleted), just send a new one
+            if (ttsSent) return; // If voice note was sent, don't spam if edit fails
+            ctx.reply(`${replyText}`);
+        });
     } catch (err) {
         console.error(`[voiceHandler] Error:`, err);
         await ctx.reply("❌ Voice processing failed. Please try again.");

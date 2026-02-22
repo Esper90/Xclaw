@@ -6,6 +6,7 @@
 // Load tools (registers side-effects into registry)
 import "./claws/wire/tools/email";
 import "./claws/wire/tools/calendar";
+import "./claws/wire/tools/x";
 
 import { bot } from "./claws/connect/bot";
 import { authMiddleware } from "./claws/connect/auth";

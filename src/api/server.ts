@@ -2,6 +2,7 @@ import express from "express";
 import { apiKeyAuth } from "./auth";
 import { memoryRouter } from "./routes/memory";
 import { draftsRouter } from "./routes/drafts";
+import { threadsRouter } from "./routes/threads";
 import { config } from "../config";
 
 /**
@@ -22,6 +23,7 @@ export function startApiServer(): void {
     // ── Protected routes ───────────────────────────────────────────────────
     app.use("/memory", apiKeyAuth, memoryRouter);
     app.use("/drafts", apiKeyAuth, draftsRouter);
+    app.use("/threads", apiKeyAuth, threadsRouter);
 
     // ── 404 handler ────────────────────────────────────────────────────────
     app.use((_req, res) => {

@@ -27,13 +27,17 @@ async function getXClient(): Promise<TwitterApi> {
 /**
  * Post a tweet to X.
  * @param text - The content of the tweet
+ * @param replyToId - Optional ID of the tweet to reply to (for threads)
  */
-export async function postTweet(text: string): Promise<string> {
+export async function postTweet(text: string, replyToId?: string): Promise<string> {
     try {
         const client = await getXClient();
-        console.log(`[X] Attempting to post tweet: "${text.substring(0, 50)}..."`);
+        console.log(`[X] Attempting to post tweet: "${text.substring(0, 50)}..."${replyToId ? ` (reply to ${replyToId})` : ""}`);
 
-        const { data: createdTweet } = await client.v2.tweet(text);
+        const { data: createdTweet } = await client.v2.tweet({
+            text,
+            ...(replyToId ? { reply: { in_reply_to_tweet_id: replyToId } } : {}),
+        });
 
         console.log(`[X] Tweet posted successfully! ID: ${createdTweet.id}`);
         return createdTweet.id;
