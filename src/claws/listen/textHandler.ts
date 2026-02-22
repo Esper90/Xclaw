@@ -172,7 +172,7 @@ async function runDMSearchReply(userId: string, ctx: BotContext, query: string):
         const personMatch = query.match(/(?:from|by)\s*@?(\w+)/i);
         if (personMatch) {
             const name = personMatch[1];
-            return `🔍 *No DMs found from "${name}"*\n\nTheir message wasn't in your recent DM history.\n\n💡 If their handle is different from their name, try: _"find dm from @theirfullhandle"_`;
+            return `🔍 *No DMs found from "${name}"*\n\n⚠️ X's new encrypted chats (XChat) are currently invisible to all bots via the API — X confirmed this limitation in Feb 2026 and is working on a fix.\n\n💡 If it's an older unencrypted chat, try the full handle: _"find dm from @theirfullhandle"_`;
         }
         return `🔍 *No DMs found matching:* "${query}"\n\nTried your recent messages — nothing matched. Try a different description.`;
     }

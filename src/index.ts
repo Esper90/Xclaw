@@ -58,7 +58,14 @@ async function main(): Promise<void> {
     process.once("SIGTERM", () => shutdown("SIGTERM"));
     process.once("SIGINT",  () => shutdown("SIGINT"));
 
+    // Prevent 409 Conflict crash loop on Railway redeploys:
+    // Telegram's long-polling session isn't released instantly when the old container
+    // shuts down. We wait 15s to ensure it clears before starting to poll.
+    console.log("[bot] Waiting 15s for previous instance to release Telegram session...");
+    await new Promise<void>(resolve => setTimeout(resolve, 15_000));
+
     await bot.start({
+        drop_pending_updates: true,
         onStart: (info) => {
             console.log(`🤖 Xclaw is online — @${info.username}`);
         },

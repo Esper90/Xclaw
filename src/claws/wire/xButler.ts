@@ -39,6 +39,25 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 // ── Tuning constants ──────────────────────────────────────────────────────────
 /** Pinecone cosine-similarity threshold to consider a mention "relevant". */
 const MEMORY_RELEVANCE_THRESHOLD = 0.72;
+
+// ── Known-senders cache ───────────────────────────────────────────────────────
+// Populated from every successful DM fetch. Lets findDMsFromPerson resolve
+// partial names like "sage" → "@sageisthename1" without any API call.
+// Keys: full lowercase username AND stripped alphanumeric fragment.
+// e.g. "sageisthename1" and "sageisthename1" (same), but also stored under
+// any distinct fragment that resolves to it.
+const knownSendersCache = new Map<string, { id: string; username: string }>();
+
+function populateKnownSendersCache(dms: Array<{ senderId: string; senderUsername?: string }>): void {
+    for (const dm of dms) {
+        if (!dm.senderUsername) continue;
+        const entry = { id: dm.senderId, username: dm.senderUsername };
+        const lower = dm.senderUsername.toLowerCase();
+        knownSendersCache.set(lower, entry);
+        const frag = lower.replace(/[^a-z0-9]/g, "");
+        if (frag && frag !== lower) knownSendersCache.set(frag, entry);
+    }
+}
 /** Sum of likes + retweets + replies that makes a mention worth alerting even
  *  without memory relevance (someone is engaging with you seriously). */
 const ENGAGEMENT_ALERT_THRESHOLD = 10;
@@ -428,6 +447,10 @@ export async function fetchDMs(
         });
     }
 
+    // Populate known-senders cache so future partial-name lookups (e.g. "sage") can
+    // resolve to the real handle without any additional API calls.
+    populateKnownSendersCache(results);
+
     return results;
 }
 
@@ -478,18 +501,30 @@ async function findDMsFromPerson(query: string): Promise<ButlerDM[]> {
 
     const client = getClient();
 
+    // Step 0: check known-senders cache — resolves partial names like "sage" → "@sageisthename1"
+    // populated from all previous fetchDMs calls this session.
+    const cacheTarget = targetName.toLowerCase();
+    const cacheFrag = cacheTarget.replace(/[^a-z0-9]/g, "");
+    const cachedUser = knownSendersCache.get(cacheTarget) ??
+        [...knownSendersCache.entries()].find(([k]) => k.includes(cacheFrag) || cacheFrag.includes(k))?.[1];
+
     // Step 1: exact handle — only trust this match if the conversation actually has DMs.
     // e.g. "sage" matches real account @sage (id:6014) which never DMed us — skip it.
     let exactCandidates: Array<{ id: string; username: string }> = [];
-    try {
-        console.log(`[DM Search DEBUG] Trying exact userByUsername("${targetName}")`);
-        const exact = await client.v2.userByUsername(targetName);
-        if (exact.data) {
-            exactCandidates = [exact.data];
-            console.log(`[DM Search DEBUG] Exact handle exists: @${exact.data.username} (id: ${exact.data.id}) — will verify has DMs`);
+    if (cachedUser) {
+        console.log(`[DM Search DEBUG] Cache hit: "${targetName}" → @${cachedUser.username} (${cachedUser.id})`);
+        exactCandidates = [cachedUser];
+    } else {
+        try {
+            console.log(`[DM Search DEBUG] Trying exact userByUsername("${targetName}")`);
+            const exact = await client.v2.userByUsername(targetName);
+            if (exact.data) {
+                exactCandidates = [exact.data];
+                console.log(`[DM Search DEBUG] Exact handle exists: @${exact.data.username} (id: ${exact.data.id}) — will verify has DMs`);
+            }
+        } catch (e: any) {
+            console.log(`[DM Search DEBUG] userByUsername failed (expected for "${targetName}"): ${e?.message ?? e}`);
         }
-    } catch (e: any) {
-        console.log(`[DM Search DEBUG] userByUsername failed (expected for "${targetName}"): ${e?.message ?? e}`);
     }
 
     // Step 2: v1.searchUsers is blocked on X Free tier (403) — skip it.
@@ -540,6 +575,8 @@ async function findDMsFromPerson(query: string): Promise<ButlerDM[]> {
                     suggestedReply,
                 });
             }
+            // Cache this candidate so future partial queries resolve instantly
+            populateKnownSendersCache(matched);
             console.log(`[DM Search DEBUG] ✅ Returning ${matched.length} DMs from @${candidate.username}`);
             return matched;
         } catch (e: any) {
