@@ -168,7 +168,13 @@ async function runDMSearchReply(userId: string, ctx: BotContext, query: string):
     const dms = await searchDMs(userId, query);
 
     if (dms.length === 0) {
-        return `🔍 *No DMs found matching:* "${query}"\n\nTried the last 50 messages — nothing matched. Try a different description.`;
+        // For person queries give a more specific hint about using the full handle
+        const personMatch = query.match(/(?:from|by)\s*@?(\w+)/i);
+        if (personMatch) {
+            const name = personMatch[1];
+            return `🔍 *No DMs found from "${name}"*\n\nTheir message wasn't in your recent DM history.\n\n💡 If their handle is different from their name, try: _"find dm from @theirfullhandle"_`;
+        }
+        return `🔍 *No DMs found matching:* "${query}"\n\nTried your recent messages — nothing matched. Try a different description.`;
     }
 
     ctx.session.pendingDMs = dms.map((dm, i) => ({

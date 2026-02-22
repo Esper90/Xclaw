@@ -432,6 +432,16 @@ export async function fetchDMs(
 }
 
 /**
+ * Returns true if the query is asking for DMs FROM/BY a specific person
+ * (as opposed to a topic/content search).
+ * e.g. "bring me the latest dm from sage" → true
+ *      "find the dm about advertising"     → false
+ */
+function isPersonQuery(query: string): boolean {
+    return /(?:^|\s)(?:from|by)\s*@?\w/i.test(query.trim());
+}
+
+/**
  * Extract the core name/handle target from a natural-language DM query.
  * e.g. "bring me the latest dm from sage" → "sage"
  *      "find dm by @sageisthename1"        → "sageisthename1"
@@ -637,7 +647,15 @@ export async function searchDMs(
         }
     }
 
-    // ── Step 2: Gemini semantic search (fallback for complex queries) ─────────
+    // ── Step 2: Gemini semantic search (fallback for topic/content queries only) ──
+    // SKIP Gemini for person-name queries ("from sage", "by alex", etc.).
+    // When a person is targeted but not found in the fetched DMs, returning []
+    // is far better than letting Gemini pick a semantically unrelated sender.
+    if (isPersonQuery(query)) {
+        console.log(`[DM Search DEBUG] Person query — skipping Gemini, returning not-found for "${cleanQuery}"`);
+        return [];
+    }
+
     // Build a compact summary — includes both username AND senderId so Gemini
     // can still reason about numeric IDs if the username expansion failed.
     const summaries = allDMs.map((dm, i) =>
