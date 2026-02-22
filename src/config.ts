@@ -38,6 +38,12 @@ const schema = z.object({
 
     // Heartbeat
     HEARTBEAT_CRON: z.string().default("0 */6 * * *"),
+
+    // X (Twitter) API
+    X_CONSUMER_KEY: z.string().optional(),
+    X_CONSUMER_SECRET: z.string().optional(),
+    X_ACCESS_TOKEN: z.string().optional(),
+    X_ACCESS_SECRET: z.string().optional(),
 });
 
 function parseConfig() {

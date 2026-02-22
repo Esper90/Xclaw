@@ -3,6 +3,7 @@ import { handleText } from "./textHandler";
 import { handleVoice } from "./voiceHandler";
 import { registerHeartbeat, unregisterHeartbeat } from "../sense/heartbeat";
 import { queryMemory } from "../archive/pinecone";
+import { postTweet } from "../wire/xService";
 
 /**
  * Register all bot message and command handlers on the bot instance.
@@ -18,6 +19,7 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `/voice on|off — Toggle voice replies\n` +
             `/heartbeat on|off — Toggle proactive check-ins\n` +
             `/memory <query> — Search your memories\n` +
+            `/post <text> — Post a tweet to X\n` +
             `/help — Show this message`,
             { parse_mode: "Markdown" }
         );
@@ -26,6 +28,8 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
     bot.command("help", async (ctx) => {
         await ctx.reply(
             `🦾 *Xclaw — Help*\n\n` +
+            `*X Integration:* You can now post to Twitter directly!\n` +
+            `*/post <text>* — Draft and send a tweet from the bot\n\n` +
             `*Voice:* Send a voice note and I'll transcribe + respond.\n` +
             `*/voice on* — I reply back with audio\n` +
             `*/voice off* — Text-only replies (default)\n\n` +
@@ -36,6 +40,34 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `*/heartbeat off* — Disable check-ins`,
             { parse_mode: "Markdown" }
         );
+    });
+
+    bot.command("post", async (ctx) => {
+        const text = ctx.match?.trim();
+        if (!text) {
+            await ctx.reply("Usage: /post <your tweet content>");
+            return;
+        }
+
+        const waitMsg = await ctx.reply("🐦 Posting to X...");
+
+        try {
+            const tweetId = await postTweet(text);
+            await ctx.api.editMessageText(
+                ctx.chat.id,
+                waitMsg.message_id,
+                `✅ *Tweet posted!*\n\nID: \`${tweetId}\`\nhttps://x.com/i/status/${tweetId}`,
+                { parse_mode: "Markdown" }
+            );
+        } catch (err: any) {
+            console.error("[router] /post failed:", err);
+            await ctx.api.editMessageText(
+                ctx.chat.id,
+                waitMsg.message_id,
+                `❌ *X API Error:*\n\n${err.message}`,
+                { parse_mode: "Markdown" }
+            );
+        }
     });
 
     bot.command("voice", async (ctx) => {
