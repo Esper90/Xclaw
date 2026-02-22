@@ -1,7 +1,6 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import fetch from "node-fetch";
 import type { BotContext } from "../connect/bot";
 import { transcribeAudio } from "../sense/whisper";
 import { synthesizeToFile } from "../sense/tts";
