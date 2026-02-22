@@ -6,6 +6,8 @@ import { queryMemory } from "../archive/pinecone";
 import { postTweet } from "../wire/xService";
 import { fetchMentions, fetchDMs } from "../wire/xButler";
 
+const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
+
 /**
  * Register all bot message and command handlers on the bot instance.
  */
@@ -102,6 +104,7 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             const dms = await fetchDMs(userId, 5);
 
             if (dms.length === 0) {
+                ctx.session.pendingDMs = [];
                 await ctx.api.editMessageText(
                     ctx.chat.id,
                     waitMsg.message_id,
@@ -111,16 +114,27 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
                 return;
             }
 
-            let message = `📨 *${dms.length} DM${dms.length > 1 ? "s" : ""}:*\n\n`;
+            // Store with labels in session so user can reply naturally afterwards
+            ctx.session.pendingDMs = dms.map((dm, i) => ({
+                label: DM_LABELS[i] ?? String(i + 1),
+                id: dm.id,
+                conversationId: dm.conversationId,
+                senderId: dm.senderId,
+                senderUsername: dm.senderUsername,
+                text: dm.text,
+                suggestedReply: dm.suggestedReply,
+            }));
 
-            for (const dm of dms) {
-                message += `👤 @${dm.senderUsername ?? dm.senderId}\n`;
-                message += `💬 ${dm.text.slice(0, 220)}${dm.text.length > 220 ? "…" : ""}\n`;
-                if (dm.suggestedReply) {
-                    message += `💡 *Suggested reply:* ${dm.suggestedReply.slice(0, 200)}\n`;
+            let message = `📨 *${dms.length} DM${dms.length > 1 ? "s" : ""}:*\n\n`;
+            for (const p of ctx.session.pendingDMs) {
+                message += `*[${p.label}]* 👤 @${p.senderUsername ?? p.senderId}\n`;
+                message += `💬 ${p.text.slice(0, 220)}${p.text.length > 220 ? "…" : ""}\n`;
+                if (p.suggestedReply) {
+                    message += `💡 *Suggested:* ${p.suggestedReply.slice(0, 200)}\n`;
                 }
                 message += `\n`;
             }
+            message += `_Reply naturally — e.g. "reply to A", "reply to all", "reply to B but ask if they're free Friday"_`;
 
             await ctx.api.editMessageText(
                 ctx.chat.id,

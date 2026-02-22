@@ -15,6 +15,7 @@ bot.use(
             buffer: [],
             voiceEnabled: false,
             heartbeatEnabled: false,
+            pendingDMs: [],
         }),
     })
 );
