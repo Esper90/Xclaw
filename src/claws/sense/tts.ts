@@ -43,7 +43,40 @@ function cleanTextForTTS(rawText: string): string {
 }
 
 /**
- * Convert text to speech using Google Cloud TTS and return an MP3 Buffer.
+ * Convert text to speech using Inworld TTS and return an MP3 Buffer.
+ */
+async function synthesizeInworldSpeech(text: string): Promise<Buffer> {
+    const url = 'https://api.inworld.ai/tts/v1/voice';
+    const options = {
+        method: 'POST',
+        headers: {
+            'Authorization': `Basic ${config.INWORLD_API_KEY}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            text: text,
+            voiceId: config.INWORLD_VOICE_ID,
+            modelId: "inworld-tts-1.5-mini",
+            timestampType: "WORD"
+        }),
+    };
+
+    const response = await fetch(url, options);
+
+    if (!response.ok) {
+        throw new Error(`Inworld HTTP error! status: ${response.status}`);
+    }
+
+    const result = await response.json();
+    if (!result.audioContent) {
+        throw new Error("No audio content returned from Inworld TTS");
+    }
+
+    return Buffer.from(result.audioContent, 'base64');
+}
+
+/**
+ * Convert text to speech. Tries Inworld first (if configured), falls back to Google Cloud TTS.
  * Falls back gracefully: caller should catch errors and send text instead.
  */
 export async function synthesizeSpeech(rawText: string): Promise<Buffer> {
@@ -51,6 +84,15 @@ export async function synthesizeSpeech(rawText: string): Promise<Buffer> {
 
     if (text.length === 0) {
         throw new Error("Text was empty after TTS markdown cleaning");
+    }
+
+    // Try Inworld first if API key is present
+    if (config.INWORLD_API_KEY) {
+        try {
+            return await synthesizeInworldSpeech(text);
+        } catch (err) {
+            console.error(`[tts] Inworld TTS failed, falling back to Google Cloud TTS:`, err);
+        }
     }
 
     const request = {

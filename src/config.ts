@@ -20,9 +20,14 @@ const schema = z.object({
     // Groq
     GROQ_API_KEY: z.string().min(10, "GROQ_API_KEY is required"),
 
-    // Google Cloud TTS
+    // ─── Google Cloud TTS ────────────────────────────────────────────────────────
     GOOGLE_CREDENTIALS: z.string().min(10, "GOOGLE_CREDENTIALS is required (JSON string or path)"),
     GOOGLE_TTS_VOICE: z.string().default("en-US-Standard-I"), // Good default voice
+
+    // ─── Inworld TTS ─────────────────────────────────────────────────────────────
+    INWORLD_API_KEY: z.string().optional(),
+    INWORLD_VOICE_ID: z.string().default("Alain"),
+
 
     // REST API
     REST_API_KEY: z.string().min(16, "REST_API_KEY must be at least 16 chars"),
