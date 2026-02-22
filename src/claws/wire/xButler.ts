@@ -285,7 +285,8 @@ export async function fetchDMs(
     xcUserId: string,
     limit = 10,
     since?: string,
-    cheapMode = false
+    cheapMode = false,
+    rawMode = false   // when true: skip Pinecone scoring entirely — used by searchDMs
 ): Promise<ButlerDM[]> {
     const client = getClient();
     const myId = await getMyXUserId();
@@ -340,10 +341,17 @@ export async function fetchDMs(
         const text = event.text ?? "";
         if (!text.trim()) continue;
 
-        const { score, memories } = await scoreRelevance(xcUserId, text);
+        // rawMode: skip Pinecone entirely — return every DM so search can see all of them
+        let score = 0;
+        let memories: string[] = [];
+        if (!rawMode) {
+            const relevance = await scoreRelevance(xcUserId, text);
+            score = relevance.score;
+            memories = relevance.memories;
+        }
 
         let suggestedReply: string | undefined;
-        if (!cheapMode && replyCount < MAX_REPLY_SUGGESTIONS) {
+        if (!cheapMode && !rawMode && replyCount < MAX_REPLY_SUGGESTIONS) {
             try {
                 suggestedReply = await suggestReply(text, memories, true);
                 replyCount++;
@@ -385,8 +393,8 @@ export async function searchDMs(
     xcUserId: string,
     query: string
 ): Promise<ButlerDM[]> {
-    // Fetch a large batch — we want to search across as many as possible
-    const allDMs = await fetchDMs(xcUserId, 50, undefined, /* cheapMode */ true);
+    // rawMode=true: skip Pinecone scoring — we want ALL DMs regardless of relevance score
+    const allDMs = await fetchDMs(xcUserId, 50, undefined, /* cheapMode */ true, /* rawMode */ true);
     if (allDMs.length === 0) return [];
 
     // Build a compact summary of all DMs for Gemini to reason over
