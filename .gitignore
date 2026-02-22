@@ -25,3 +25,4 @@ downloads/
 !package.json
 !package-lock.json
 !railway.toml
+!tsconfig.json
