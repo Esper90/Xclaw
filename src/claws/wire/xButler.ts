@@ -291,8 +291,10 @@ export async function fetchDMs(
     const client = getClient();
     const myId = await getMyXUserId();
 
+    // X API supports max_results 1–100 for GET /2/dm_events
+    const perPage = Math.min(Math.max(limit, 1), 100);
     const params: Record<string, unknown> = {
-        max_results: Math.min(Math.max(limit, 1), 50),
+        max_results: perPage,
         "dm_event.fields": ["created_at", "sender_id", "dm_conversation_id", "text"],
         event_types: "MessageCreate",
         expansions: ["sender_id"],
@@ -303,21 +305,45 @@ export async function fetchDMs(
         params.start_time = new Date(since).toISOString();
     }
 
-    let events: LocalDMEvent[];
-    let usersMap: Map<string, UserV2>;
+    let events: LocalDMEvent[] = [];
+    let usersMap: Map<string, UserV2> = new Map();
 
     try {
         // GET /2/dm_events — returns a FullDMTimelineV2Paginator
         const dmTimeline = await client.v2.listDmEvents(params as any);
         // .events is the typed getter on DMTimelineV2Paginator
-        events = (dmTimeline.events ?? []) as LocalDMEvent[];
+        const firstPageEvents = (dmTimeline.events ?? []) as LocalDMEvent[];
+        events.push(...firstPageEvents);
 
         // Step 1: build usersMap from the expansion (raw .data.includes.users is the
         // correct accessor for FullDMTimelineV2Paginator in twitter-api-v2 v1.29.0;
         // the .includes.user() helper does NOT exist in this version)
-        const rawData = (dmTimeline as any).data as { includes?: { users?: UserV2[] } } | undefined;
+        const rawData = (dmTimeline as any).data as { includes?: { users?: UserV2[]; }; meta?: { next_token?: string } } | undefined;
         const includedUsers: UserV2[] = rawData?.includes?.users ?? [];
-        usersMap = new Map<string, UserV2>(includedUsers.map((u: UserV2) => [u.id, u]));
+        for (const u of includedUsers) usersMap.set(u.id, u);
+
+        // Paginate for rawMode (search): keep fetching until we have `limit` raw events
+        // or exhaust all pages. Limit to 5 pages max to avoid rate-limit abuse.
+        if (rawMode && limit > perPage) {
+            let nextToken: string | undefined = rawData?.meta?.next_token
+                ?? (dmTimeline as any).meta?.next_token;
+            let pagesLoaded = 1;
+            while (events.length < limit && nextToken && pagesLoaded < 5) {
+                console.log(`[butler:dm] Paginating DM events (page ${pagesLoaded + 1}), collected ${events.length} so far`);
+                const nextPage = await client.v2.listDmEvents({
+                    ...params,
+                    pagination_token: nextToken,
+                } as any);
+                const nextEvents = (nextPage.events ?? []) as LocalDMEvent[];
+                events.push(...nextEvents);
+                const nextRaw = (nextPage as any).data as { includes?: { users?: UserV2[] }; meta?: { next_token?: string } } | undefined;
+                for (const u of nextRaw?.includes?.users ?? []) usersMap.set(u.id, u);
+                nextToken = nextRaw?.meta?.next_token ?? (nextPage as any).meta?.next_token;
+                pagesLoaded++;
+                if (nextEvents.length === 0) break;
+            }
+            console.log(`[butler:dm] Pagination done — ${events.length} total raw events across ${pagesLoaded} page(s)`);
+        }
 
         const unresolvedIds: string[] = [];
         for (const ev of events) {
@@ -543,8 +569,9 @@ export async function searchDMs(
 
     console.log(`[DM Search DEBUG] findDMsFromPerson returned [] — falling back to broad rawMode search`);
 
-    // ── Broad search: fetch all recent DMs (rawMode — no Pinecone scoring) ────
-    const allDMs = await fetchDMs(xcUserId, 50, undefined, /* cheapMode */ true, /* rawMode */ true);
+    // ── Broad search: fetch recent DMs across multiple pages (rawMode — no Pinecone scoring) ──
+    // limit=200 causes fetchDMs to paginate up to 5 pages of 100 raw events each.
+    const allDMs = await fetchDMs(xcUserId, 200, undefined, /* cheapMode */ true, /* rawMode */ true);
     if (allDMs.length === 0) return [];
 
     // ── Second-chance username resolution ────────────────────────────────────
