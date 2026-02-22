@@ -145,6 +145,14 @@ xWebhookRouter.post("/", async (req: Request, res: Response) => {
     // Acknowledge immediately — X requires a 200 within 3 seconds.
     res.sendStatus(200);
 
+    // Debug: log every incoming POST so we can confirm X is delivering at all
+    const keys = Object.keys(req.body ?? {});
+    console.log(`[x-webhook] POST received — payload keys: [${keys.join(", ") || "EMPTY"}]`);
+    if (keys.length === 0) {
+        console.warn("[x-webhook] ⚠ Empty payload — X may be sending a keep-alive ping or delivery is misconfigured");
+        return;
+    }
+
     // Verify HMAC signature (warn on mismatch but continue — avoids timing edge cases on first deploy)
     if (!verifySignature(req)) {
         console.warn("[x-webhook] ⚠ Signature mismatch — check X_CONSUMER_SECRET is correct");
