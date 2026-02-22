@@ -311,11 +311,40 @@ export async function fetchDMs(
         const dmTimeline = await client.v2.listDmEvents(params as any);
         // .events is the typed getter on DMTimelineV2Paginator
         events = (dmTimeline.events ?? []) as LocalDMEvent[];
-        // Raw page data lives under .data; pull includes from there
-        const rawData = (dmTimeline as any).data as { includes?: { users?: UserV2[] } } | undefined;
-        usersMap = new Map<string, UserV2>(
-            (rawData?.includes?.users ?? []).map((u: UserV2) => [u.id, u])
-        );
+
+        // Step 1: use the library helper to resolve users from the expansion
+        // (dmTimeline as any).includes?.user(id) is the clean way vs raw .data.includes.users
+        const getIncludedUser = (id?: string): UserV2 | undefined =>
+            id ? (dmTimeline as any).includes?.user(id) : undefined;
+
+        usersMap = new Map<string, UserV2>();
+        const unresolvedIds: string[] = [];
+
+        for (const ev of events) {
+            if (!ev.sender_id) continue;
+            const u = getIncludedUser(ev.sender_id);
+            if (u) {
+                usersMap.set(ev.sender_id, u);
+            } else if (!usersMap.has(ev.sender_id)) {
+                unresolvedIds.push(ev.sender_id);
+            }
+        }
+
+        // Step 2: fallback batch lookup for any sender_id the expansion didn't resolve.
+        // This fixes the "senderUsername is undefined for some accounts" X API flakiness.
+        if (unresolvedIds.length > 0) {
+            console.log(`[butler:dm] Expansion missed ${unresolvedIds.length} sender(s) — running batch user lookup`);
+            try {
+                const batchResult = await client.v2.users(unresolvedIds, {
+                    "user.fields": ["username", "verified"],
+                } as any);
+                for (const u of batchResult.data ?? []) {
+                    usersMap.set(u.id, u);
+                }
+            } catch (batchErr) {
+                console.warn("[butler:dm] Batch user lookup failed (non-fatal):", (batchErr as any)?.message ?? batchErr);
+            }
+        }
     } catch (err: any) {
         const code = err?.code ?? err?.status ?? 0;
         if (code === 403 || code === 401) {
@@ -393,18 +422,76 @@ export async function searchDMs(
     xcUserId: string,
     query: string
 ): Promise<ButlerDM[]> {
+    // Extract the core name/keyword up front — used by all steps below.
+    const cleanQuery = query
+        .toLowerCase()
+        .replace(/^(the\s+)?(latest\s+)?dm\s+(from|by)\s+/i, "")  // "latest dm from sage" → "sage"
+        .replace(/^(from|by|@)\s+/i, "")  // strip "from ", "by ", "@"
+        .replace(/@/g, "")                 // strip any remaining @
+        .trim();
+
+    // ── Step 0: Per-participant direct lookup (most accurate path) ───────────
+    // For "from <name>" queries: resolve the username → user ID via the X API,
+    // then fetch DMs from that exact conversation. Bypasses the expansion flakiness
+    // that plagues /2/dm_events + expansions=sender_id entirely.
+    if (cleanQuery.length >= 2) {
+        try {
+            const client = getClient();
+            const userResult = await client.v2.userByUsername(cleanQuery, {
+                "user.fields": ["username", "verified"],
+            } as any);
+            const targetUser = userResult.data;
+            if (targetUser) {
+                console.log(`[butler:search] Resolved @${targetUser.username} (${targetUser.id}) — fetching conversation DMs`);
+                const convTimeline = await client.v2.listDmEventsWithParticipant(targetUser.id, {
+                    max_results: 20,
+                    "dm_event.fields": ["created_at", "sender_id", "dm_conversation_id", "text"],
+                    event_types: "MessageCreate",
+                } as any);
+                const myId = await getMyXUserId();
+                const convEvents = ((convTimeline as any).events ?? []) as LocalDMEvent[];
+                const inbound = convEvents.filter(ev => ev.sender_id !== myId && ev.text?.trim());
+                if (inbound.length > 0) {
+                    const matched: ButlerDM[] = [];
+                    let replyCount = 0;
+                    for (const ev of inbound) {
+                        let suggestedReply: string | undefined;
+                        if (replyCount < MAX_REPLY_SUGGESTIONS) {
+                            try {
+                                suggestedReply = await suggestReply(ev.text ?? "", [], true);
+                                replyCount++;
+                            } catch { /* non-fatal */ }
+                        }
+                        matched.push({
+                            id: ev.id,
+                            conversationId: (ev as any).dm_conversation_id ?? "",
+                            text: ev.text ?? "",
+                            senderId: ev.sender_id ?? "",
+                            senderUsername: targetUser.username,
+                            createdAt: ev.created_at,
+                            importanceScore: 1,
+                            matchedMemories: [],
+                            suggestedReply,
+                        });
+                    }
+                    return matched;
+                }
+            }
+        } catch (err: any) {
+            // userByUsername returns 404 if the exact handle doesn't match — that's expected
+            // for fuzzy queries like "sage" when handle is "sageisthename1". Fall through.
+            console.log(`[butler:search] Per-participant lookup failed for "${cleanQuery}" (${err?.message ?? err}) — falling through to broad search`);
+        }
+    }
+
+    // ── Broad search: fetch all recent DMs with full username resolution ──────
     // rawMode=true: skip Pinecone scoring — we want ALL DMs regardless of relevance score
+    // The fallback batch lookup in fetchDMs now guarantees senderUsername is always set.
     const allDMs = await fetchDMs(xcUserId, 50, undefined, /* cheapMode */ true, /* rawMode */ true);
     if (allDMs.length === 0) return [];
 
     // ── Step 1: Direct pre-filter (username / text substring) ────────────────
-    // Extract the core name/keyword from common patterns like "from sage", "@sageisthename1"
-    // This runs before Gemini and is immune to username expansion failures.
-    const cleanQuery = query
-        .toLowerCase()
-        .replace(/^(from|by|@)\s+/i, "")  // strip "from ", "by ", "@"
-        .replace(/@/g, "")                 // strip any remaining @
-        .trim();
+    // With the batch user lookup fix in fetchDMs, senderUsername is now reliably populated.
 
     if (cleanQuery.length >= 2) {
         const directMatches = allDMs
