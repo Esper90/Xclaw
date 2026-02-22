@@ -406,93 +406,137 @@ export async function fetchDMs(
 }
 
 /**
+ * Extract the core name/handle target from a natural-language DM query.
+ * e.g. "bring me the latest dm from sage" → "sage"
+ *      "find dm by @sageisthename1"        → "sageisthename1"
+ *      "dm about advertising"              → "advertising"
+ */
+function extractDMTarget(query: string): string {
+    const lower = query.toLowerCase().trim();
+
+    // Primary: catch "from sage", "by sage", "from @sage", etc.
+    const match = lower.match(/(?:from|by)\s*@?(\w+)/i);
+    if (match?.[1]) return match[1];
+
+    // Fallback: strip common filler prefixes, take first meaningful word
+    return lower
+        .replace(/^(bring me|can you|find|show|pull up|give me|open|get).*(dm|message|dms? from|dms? by)/i, "")
+        .replace(/^(the|a|latest|recent|my)\s+/i, "")
+        .trim()
+        .replace(/^@/, "")
+        .split(/\s+/)[0] ?? "";
+}
+
+/**
+ * For "from <person>" queries: resolve the person via X API user lookup
+ * (exact handle first, then search fallback) then fetch only THEIR conversation.
+ * senderUsername is guaranteed correct — no expansion needed.
+ */
+async function findDMsFromPerson(query: string): Promise<ButlerDM[]> {
+    const targetName = extractDMTarget(query);
+    if (!targetName || targetName.length < 2) return [];
+
+    console.log(`[butler:search] Looking for DMs from: "${targetName}"`);
+    const client = getClient();
+    let targetUser: { id: string; username: string } | null = null;
+
+    // 1. Exact handle match (fastest — works when user typed @sageisthename1)
+    try {
+        const exact = await client.v2.userByUsername(targetName, {
+            "user.fields": ["username", "verified"],
+        } as any);
+        if (exact.data) targetUser = exact.data;
+    } catch { /* 404 expected for partial names */ }
+
+    // 2. User search fallback — THIS is what finds "sageisthename1" from "sage"
+    if (!targetUser) {
+        try {
+            const searchPaginator = await client.v1.searchUsers(targetName, { count: 5 } as any);
+            const firstUser = searchPaginator.users?.[0] ?? null;
+            if (firstUser) {
+                targetUser = { id: (firstUser as any).id_str ?? String((firstUser as any).id), username: (firstUser as any).screen_name };
+                console.log(`[butler:search] User search resolved "${targetName}" → @${targetUser.username}`);
+            }
+        } catch (e) {
+            console.log(`[butler:search] User search also failed for "${targetName}":`, (e as any)?.message);
+        }
+    }
+
+    if (!targetUser) {
+        console.log(`[butler:search] No X user found for "${targetName}"`);
+        return [];
+    }
+
+    // 3. Fetch ONLY this person's conversation (newest first, guaranteed username)
+    const myId = await getMyXUserId();
+    try {
+        const timeline = await client.v2.listDmEventsWithParticipant(targetUser.id, {
+            max_results: 20,
+            "dm_event.fields": ["created_at", "sender_id", "dm_conversation_id", "text"],
+            event_types: "MessageCreate",
+        } as any);
+        const events = ((timeline as any).events ?? []) as LocalDMEvent[];
+        const inbound = events.filter(ev => ev.sender_id !== myId && ev.text?.trim());
+
+        if (inbound.length === 0) return [];
+
+        const matched: ButlerDM[] = [];
+        let replyCount = 0;
+        for (const ev of inbound) {
+            let suggestedReply: string | undefined;
+            if (replyCount < MAX_REPLY_SUGGESTIONS) {
+                try { suggestedReply = await suggestReply(ev.text ?? "", [], true); replyCount++; }
+                catch { /* non-fatal */ }
+            }
+            matched.push({
+                id: ev.id,
+                conversationId: (ev as any).dm_conversation_id ?? "",
+                text: ev.text ?? "",
+                senderId: ev.sender_id ?? "",
+                senderUsername: targetUser!.username,   // guaranteed correct
+                createdAt: ev.created_at,
+                importanceScore: 1,
+                matchedMemories: [],
+                suggestedReply,
+            });
+        }
+        return matched;
+    } catch (e) {
+        console.log(`[butler:search] listDmEventsWithParticipant failed for @${targetUser.username}:`, (e as any)?.message);
+        return [];
+    }
+}
+
+/**
  * Search through recent DMs for ones matching a natural-language query.
  *
- * Strategy:
- *   1. Fetch the max batch (50) of DMs from X — one API call.
- *   2. Make ONE Gemini call with all DM summaries + the user's query to
- *      identify which ones match — no per-DM AI calls.
- *   3. Return matched DMs with suggested replies stored so the user can
- *      reply immediately just like the regular /dms flow.
+ * Flow:
+ *   1. Try findDMsFromPerson — resolves user by handle or search, fetches their conversation.
+ *      If found, return immediately. No Pinecone. No Gemini.
+ *   2. Broad fetch (50 DMs, rawMode) with username pre-filter (now reliable with batch lookup).
+ *   3. Gemini semantic search for topic/content queries with no clear sender.
  *
  * @param xcUserId  Pinecone namespace / Telegram user ID.
- * @param query     Natural language search, e.g. "from John about the project".
+ * @param query     Natural language search, e.g. "from sage" or "about the advertising issue".
  */
 export async function searchDMs(
     xcUserId: string,
     query: string
 ): Promise<ButlerDM[]> {
-    // Extract the core name/keyword up front — used by all steps below.
-    const cleanQuery = query
-        .toLowerCase()
-        .replace(/^(the\s+)?(latest\s+)?dm\s+(from|by)\s+/i, "")  // "latest dm from sage" → "sage"
-        .replace(/^(from|by|@)\s+/i, "")  // strip "from ", "by ", "@"
-        .replace(/@/g, "")                 // strip any remaining @
-        .trim();
+    // ── Step 0: Person-specific path (most accurate) ─────────────────────────
+    // Handles "from X" / "by X" patterns: resolves the person, fetches their DMs directly.
+    const personMatches = await findDMsFromPerson(query);
+    if (personMatches.length > 0) return personMatches;
 
-    // ── Step 0: Per-participant direct lookup (most accurate path) ───────────
-    // For "from <name>" queries: resolve the username → user ID via the X API,
-    // then fetch DMs from that exact conversation. Bypasses the expansion flakiness
-    // that plagues /2/dm_events + expansions=sender_id entirely.
-    if (cleanQuery.length >= 2) {
-        try {
-            const client = getClient();
-            const userResult = await client.v2.userByUsername(cleanQuery, {
-                "user.fields": ["username", "verified"],
-            } as any);
-            const targetUser = userResult.data;
-            if (targetUser) {
-                console.log(`[butler:search] Resolved @${targetUser.username} (${targetUser.id}) — fetching conversation DMs`);
-                const convTimeline = await client.v2.listDmEventsWithParticipant(targetUser.id, {
-                    max_results: 20,
-                    "dm_event.fields": ["created_at", "sender_id", "dm_conversation_id", "text"],
-                    event_types: "MessageCreate",
-                } as any);
-                const myId = await getMyXUserId();
-                const convEvents = ((convTimeline as any).events ?? []) as LocalDMEvent[];
-                const inbound = convEvents.filter(ev => ev.sender_id !== myId && ev.text?.trim());
-                if (inbound.length > 0) {
-                    const matched: ButlerDM[] = [];
-                    let replyCount = 0;
-                    for (const ev of inbound) {
-                        let suggestedReply: string | undefined;
-                        if (replyCount < MAX_REPLY_SUGGESTIONS) {
-                            try {
-                                suggestedReply = await suggestReply(ev.text ?? "", [], true);
-                                replyCount++;
-                            } catch { /* non-fatal */ }
-                        }
-                        matched.push({
-                            id: ev.id,
-                            conversationId: (ev as any).dm_conversation_id ?? "",
-                            text: ev.text ?? "",
-                            senderId: ev.sender_id ?? "",
-                            senderUsername: targetUser.username,
-                            createdAt: ev.created_at,
-                            importanceScore: 1,
-                            matchedMemories: [],
-                            suggestedReply,
-                        });
-                    }
-                    return matched;
-                }
-            }
-        } catch (err: any) {
-            // userByUsername returns 404 if the exact handle doesn't match — that's expected
-            // for fuzzy queries like "sage" when handle is "sageisthename1". Fall through.
-            console.log(`[butler:search] Per-participant lookup failed for "${cleanQuery}" (${err?.message ?? err}) — falling through to broad search`);
-        }
-    }
-
-    // ── Broad search: fetch all recent DMs with full username resolution ──────
-    // rawMode=true: skip Pinecone scoring — we want ALL DMs regardless of relevance score
-    // The fallback batch lookup in fetchDMs now guarantees senderUsername is always set.
+    // ── Broad search: fetch all recent DMs (rawMode — no Pinecone scoring) ────
+    // Batch user lookup in fetchDMs guarantees senderUsername is always populated.
     const allDMs = await fetchDMs(xcUserId, 50, undefined, /* cheapMode */ true, /* rawMode */ true);
     if (allDMs.length === 0) return [];
 
-    // ── Step 1: Direct pre-filter (username / text substring) ────────────────
-    // With the batch user lookup fix in fetchDMs, senderUsername is now reliably populated.
+    const cleanQuery = extractDMTarget(query);
+    console.log(`[butler:search] Broad search — extracted target: "${cleanQuery}"`);
 
+    // ── Step 1: Direct pre-filter (username / text substring) ────────────────
     if (cleanQuery.length >= 2) {
         const directMatches = allDMs
             .map((dm, i) => ({
