@@ -15,6 +15,7 @@ import { startHeartbeat } from "./claws/sense/heartbeat";
 import { startApiServer } from "./api/server";
 import { injectSendFunction } from "./api/routes/drafts";
 import { startButlerWatcher } from "./claws/wire/xButler";
+import { injectWebhookSender } from "./api/routes/xWebhook";
 
 async function main(): Promise<void> {
     console.log("🦾 Starting Xclaw...");
@@ -32,6 +33,11 @@ async function main(): Promise<void> {
 
     // ── 4. Inject Telegram send function into REST /drafts/push ─────────────
     injectSendFunction(async (chatId, text) => {
+        await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+    });
+
+    // ── 4b. Inject sender into X webhook handler ──────────────────────────────
+    injectWebhookSender(async (chatId, text) => {
         await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
     });
 

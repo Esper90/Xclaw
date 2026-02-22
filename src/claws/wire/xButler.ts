@@ -47,6 +47,8 @@ const MEMORY_RELEVANCE_THRESHOLD = 0.72;
 // e.g. "sageisthename1" and "sageisthename1" (same), but also stored under
 // any distinct fragment that resolves to it.
 const knownSendersCache = new Map<string, { id: string; username: string }>();
+/** Secondary index keyed by numeric X sender_id — used by webhook handler. */
+const knownSendersByIdCache = new Map<string, { id: string; username: string }>();
 
 function populateKnownSendersCache(dms: Array<{ senderId: string; senderUsername?: string }>): void {
     for (const dm of dms) {
@@ -56,7 +58,34 @@ function populateKnownSendersCache(dms: Array<{ senderId: string; senderUsername
         knownSendersCache.set(lower, entry);
         const frag = lower.replace(/[^a-z0-9]/g, "");
         if (frag && frag !== lower) knownSendersCache.set(frag, entry);
+        // Also index by numeric ID for O(1) webhook lookups
+        knownSendersByIdCache.set(dm.senderId, entry);
     }
+}
+
+/** Look up a known sender by their numeric X user ID (populated from DM fetches). */
+export function lookupKnownSender(senderId: string): { id: string; username: string } | undefined {
+    return knownSendersByIdCache.get(senderId);
+}
+
+/**
+ * Resolve an X user ID to a username via the API, with cache population.
+ * Falls back to returning the raw ID string if the lookup fails.
+ */
+export async function resolveXUserId(senderId: string): Promise<string> {
+    const cached = knownSendersByIdCache.get(senderId);
+    if (cached) return cached.username;
+    try {
+        const client = getClient();
+        const { data } = await client.v2.user(senderId, { "user.fields": ["username"] });
+        if (data?.username) {
+            populateKnownSendersCache([{ senderId, senderUsername: data.username }]);
+            return data.username;
+        }
+    } catch (err) {
+        console.warn(`[butler] Could not resolve X user ID ${senderId}:`, err);
+    }
+    return senderId; // fallback: return the raw ID
 }
 /** Sum of likes + retweets + replies that makes a mention worth alerting even
  *  without memory relevance (someone is engaging with you seriously). */
@@ -88,7 +117,7 @@ function getClient(): TwitterApi {
 }
 
 /** Returns the authenticated user's numeric X user ID (cached after first call). */
-async function getMyXUserId(): Promise<string> {
+export async function getMyXUserId(): Promise<string> {
     if (_myXUserId) return _myXUserId;
     const client = getClient();
     const { data } = await client.v2.me({ "user.fields": ["id", "username"] });

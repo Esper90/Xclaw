@@ -4,6 +4,7 @@ import { memoryRouter } from "./routes/memory";
 import { draftsRouter } from "./routes/drafts";
 import { threadsRouter } from "./routes/threads";
 import { butlerRouter } from "./routes/butler";
+import { xWebhookRouter } from "./routes/xWebhook";
 import { config } from "../config";
 
 /**
@@ -26,6 +27,11 @@ export function startApiServer(): void {
     app.use("/drafts", apiKeyAuth, draftsRouter);
     app.use("/threads", apiKeyAuth, threadsRouter);
     app.use("/butler", apiKeyAuth, butlerRouter);
+
+    // ── X Account Activity webhook (no auth — X calls this directly) ───────
+    // GET  /x-webhook  → CRC challenge (X verifies endpoint ownership)
+    // POST /x-webhook  → real-time DM + mention push events
+    app.use("/x-webhook", xWebhookRouter);
 
     // ── 404 handler ────────────────────────────────────────────────────────
     app.use((_req, res) => {
