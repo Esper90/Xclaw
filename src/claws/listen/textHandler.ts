@@ -7,7 +7,7 @@ import { registry } from "../wire/tools/registry";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { config } from "../../config";
 import { recordActivity } from "../sense/activityTracker";
-import { fetchMentions, fetchDMs, postButlerReply } from "../wire/xButler";
+import { fetchMentions, fetchDMs, postButlerReply, searchDMs } from "../wire/xButler";
 import type { PendingDM } from "../connect/session";
 
 const LABELS = "ABCDEFGHIJKLMNOP".split("");
@@ -110,6 +110,80 @@ async function runMentionsReply(userId: string): Promise<string> {
         }
         msg += `🔗 https://x.com/i/status/${m.id}\n\n`;
     }
+    return msg.trim();
+}
+
+/**
+ * Detect if the user is searching for specific DMs by description.
+ * Returns { isSearch: true, query } or { isSearch: false }.
+ * Only runs when the butler intent check returns "none".
+ */
+async function detectDMSearchIntent(
+    message: string
+): Promise<{ isSearch: boolean; query: string }> {
+    const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
+    const result = await model.generateContent(
+        `You are a classifier. Is the user asking to SEARCH or FIND specific DMs by content, sender, topic, or any description?
+
+SEARCH examples (return the core search query):
+- "find the dm from John" → query: "from John"
+- "can you find the dm about the advertising issue" → query: "about the advertising issue"
+- "look for messages from support" → query: "from support"
+- "find that dm about the refund" → query: "about the refund"
+- "any dms mentioning the collab?" → query: "mentioning collab"
+- "bring me dms about my chrome extension" → query: "about chrome extension"
+- "that message where they asked about pricing" → query: "asked about pricing"
+- "find dms from last week about the meeting" → query: "about the meeting"
+
+NOT SEARCH (return isSearch: false):
+- "check my dms" (→ general fetch, not search)
+- "any new dms?" (→ general fetch)
+- general questions unrelated to finding a specific DM
+
+Return ONLY valid JSON: {"isSearch": true, "query": "the search query"} or {"isSearch": false, "query": ""}
+No explanation, no markdown.
+
+Message: "${message.replace(/"/g, "'")}"`
+    );
+
+    try {
+        const raw = result.response.text().trim().replace(/^```json\n?|```$/g, "").trim();
+        const parsed = JSON.parse(raw);
+        if (parsed.isSearch === true && typeof parsed.query === "string" && parsed.query.length > 0) {
+            return { isSearch: true, query: parsed.query };
+        }
+    } catch { /* fall through */ }
+    return { isSearch: false, query: "" };
+}
+
+/** Search DMs and format results into a Telegram markdown message, storing in session */
+async function runDMSearchReply(userId: string, ctx: BotContext, query: string): Promise<string> {
+    const dms = await searchDMs(userId, query);
+
+    if (dms.length === 0) {
+        return `🔍 *No DMs found matching:* "${query}"\n\nTried the last 50 messages — nothing matched. Try a different description.`;
+    }
+
+    ctx.session.pendingDMs = dms.map((dm, i) => ({
+        label: LABELS[i] ?? String(i + 1),
+        id: dm.id,
+        conversationId: dm.conversationId,
+        senderId: dm.senderId,
+        senderUsername: dm.senderUsername,
+        text: dm.text,
+        suggestedReply: dm.suggestedReply,
+    }));
+
+    let msg = `🔍 *Found ${dms.length} DM${dms.length > 1 ? "s" : ""} matching "${query}":*\n\n`;
+    for (const p of ctx.session.pendingDMs) {
+        msg += `*[${p.label}]* 👤 @${p.senderUsername ?? p.senderId}\n`;
+        msg += `💬 ${p.text.slice(0, 220)}${p.text.length > 220 ? "…" : ""}\n`;
+        if (p.suggestedReply) {
+            msg += `💡 *Suggested:* ${p.suggestedReply.slice(0, 200)}\n`;
+        }
+        msg += `\n`;
+    }
+    msg += `_Say "reply to A", "reply to all", or "reply to B but add…"_`;
     return msg.trim();
 }
 
@@ -295,6 +369,16 @@ export async function handleText(
         }
     } catch (err) {
         console.warn("[textHandler] Butler intent check failed:", err);
+    }
+
+    // 0d. DM search intent — find specific DMs by description, sender, topic, etc.
+    try {
+        const searchIntent = await detectDMSearchIntent(userMessage);
+        if (searchIntent.isSearch) {
+            return await runDMSearchReply(userId, ctx, searchIntent.query);
+        }
+    } catch (err) {
+        console.warn("[textHandler] DM search intent check failed:", err);
     }
 
     // 1. Update buffer with user message

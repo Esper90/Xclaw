@@ -369,6 +369,86 @@ export async function fetchDMs(
 }
 
 /**
+ * Search through recent DMs for ones matching a natural-language query.
+ *
+ * Strategy:
+ *   1. Fetch the max batch (50) of DMs from X — one API call.
+ *   2. Make ONE Gemini call with all DM summaries + the user's query to
+ *      identify which ones match — no per-DM AI calls.
+ *   3. Return matched DMs with suggested replies stored so the user can
+ *      reply immediately just like the regular /dms flow.
+ *
+ * @param xcUserId  Pinecone namespace / Telegram user ID.
+ * @param query     Natural language search, e.g. "from John about the project".
+ */
+export async function searchDMs(
+    xcUserId: string,
+    query: string
+): Promise<ButlerDM[]> {
+    // Fetch a large batch — we want to search across as many as possible
+    const allDMs = await fetchDMs(xcUserId, 50, undefined, /* cheapMode */ true);
+    if (allDMs.length === 0) return [];
+
+    // Build a compact summary of all DMs for Gemini to reason over
+    const summaries = allDMs.map((dm, i) =>
+        `[${i}] from:${dm.senderUsername ?? dm.senderId} text:"${dm.text.slice(0, 150).replace(/"/g, "'")}"`
+    ).join("\n");
+
+    const ai = new GoogleGenerativeAI(config.GEMINI_API_KEY);
+    const model = ai.getGenerativeModel({ model: config.GEMINI_MODEL });
+
+    const result = await model.generateContent(
+        `You are a DM search engine. The user wants to find DMs matching this description:
+"${query.replace(/"/g, "'")}"
+
+Here are the available DMs (indexed from 0):
+${summaries}
+
+Return ONLY a JSON array of index numbers that match the user's description.
+Be generous — include partial matches. If none match, return [].
+Examples: [0,2,5] or [] 
+Return ONLY the JSON array, no explanation.`
+    );
+
+    let matchedIndices: number[] = [];
+    try {
+        const raw = result.response.text().trim().replace(/^```json\n?|```$/g, "").trim();
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+            matchedIndices = parsed.filter((n): n is number =>
+                typeof n === "number" && n >= 0 && n < allDMs.length
+            );
+        }
+    } catch {
+        // If Gemini output is unparseable, fall back to simple text search
+        const q = query.toLowerCase();
+        matchedIndices = allDMs
+            .map((dm, i) => ({ i, match: dm.text.toLowerCase().includes(q) || (dm.senderUsername ?? "").toLowerCase().includes(q) }))
+            .filter(x => x.match)
+            .map(x => x.i);
+    }
+
+    if (matchedIndices.length === 0) return [];
+
+    // Generate reply suggestions for matched DMs (up to MAX_REPLY_SUGGESTIONS)
+    const matched: ButlerDM[] = [];
+    let replyCount = 0;
+    for (const idx of matchedIndices) {
+        const dm = allDMs[idx];
+        let suggestedReply = dm.suggestedReply;
+        if (!suggestedReply && replyCount < MAX_REPLY_SUGGESTIONS) {
+            try {
+                suggestedReply = await suggestReply(dm.text, dm.matchedMemories, true);
+                replyCount++;
+            } catch { /* non-fatal */ }
+        }
+        matched.push({ ...dm, suggestedReply });
+    }
+
+    return matched;
+}
+
+/**
  * Post a reply to a tweet OR send a reply inside a DM conversation,
  * then auto-save the reply to Pinecone memory.
  *
