@@ -42,15 +42,17 @@ Message: "${message.replace(/"/g, "'")}"`
 /**
  * Use Gemini to detect if the user is asking about X (Twitter) DMs or mentions.
  * Returns "dms", "mentions", or "none".
+ * NOTE: only called as fallback after detectXIntent returns "none".
  */
 async function detectButlerIntent(message: string): Promise<"dms" | "mentions" | "none"> {
     const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
     const result = await model.generateContent(
-        `You are a classifier. Is the user asking to check their X (Twitter) DMs/messages, or their X mentions/replies?
+        `You are a classifier. Is the user asking to check their X (Twitter) DMs/messages (general inbox check), or their X mentions/replies?
+This is for a GENERAL inbox fetch — NOT a specific search for a particular DM.
 
-DMS examples: "what's in my dms", "any new messages", "check my dms today", "what's going on with my messages", "who messaged me", "any dms", "show me my inbox", "new dms?", "anything in my messages"
-MENTIONS examples: "any mentions", "who mentioned me", "anything important on x", "what's new on twitter", "any replies", "check my mentions", "anything going on on x", "what's happening on x", "any activity on x", "x notifications"
-NONE examples: general questions, code help, anything not about checking X activity
+DMS examples (general fetch, no specific person/topic): "check my dms", "any new messages", "what's in my inbox", "any dms?", "show me my messages"
+MENTIONS examples: "any mentions", "who mentioned me", "anything important on x", "what's new on twitter", "any replies", "check my mentions", "anything going on on x"
+NONE examples: anything asking for a specific DM by person/topic/content, general questions unrelated to X
 
 Reply with exactly one word. Options: dms / mentions / none
 
@@ -123,25 +125,30 @@ async function detectDMSearchIntent(
 ): Promise<{ isSearch: boolean; query: string }> {
     const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
     const result = await model.generateContent(
-        `You are a classifier. Is the user asking to SEARCH or FIND specific DMs by content, sender, topic, or any description?
+        `You are a classifier. Is the user asking to SEARCH or FIND specific DMs by sender name, username, content, topic, or any description?
+If they mention ANY specific person, name, username, or topic they want to find — that is a SEARCH.
 
-SEARCH examples (return the core search query):
+SEARCH examples — extract the core search query:
+- "can you bring up the dms from sage is the name" → query: "from sage"
+- "find the dm from @sageisthename1" → query: "from sageisthename1"  
 - "find the dm from John" → query: "from John"
-- "can you find the dm about the advertising issue" → query: "about the advertising issue"
+- "can you find the dm about the advertising issue" → query: "about advertising"
 - "look for messages from support" → query: "from support"
-- "find that dm about the refund" → query: "about the refund"
+- "find that dm about the refund" → query: "about refund"
 - "any dms mentioning the collab?" → query: "mentioning collab"
 - "bring me dms about my chrome extension" → query: "about chrome extension"
 - "that message where they asked about pricing" → query: "asked about pricing"
-- "find dms from last week about the meeting" → query: "about the meeting"
+- "bring up the messages from that person who asked about the deal" → query: "asked about the deal"
+- "show me the dm from the ads team" → query: "from ads team"
+- "the dm about the partnership" → query: "about partnership"
 
-NOT SEARCH (return isSearch: false):
-- "check my dms" (→ general fetch, not search)
-- "any new dms?" (→ general fetch)
-- general questions unrelated to finding a specific DM
+NOT SEARCH (return isSearch: false) — these are general inbox checks with no specific target:
+- "check my dms"
+- "any new messages?"
+- "what's in my inbox"
 
 Return ONLY valid JSON: {"isSearch": true, "query": "the search query"} or {"isSearch": false, "query": ""}
-No explanation, no markdown.
+No explanation, no markdown, no code block.
 
 Message: "${message.replace(/"/g, "'")}"`
     );
@@ -358,7 +365,19 @@ export async function handleText(
         }
     }
 
-    // 0c. Butler intent check — catches X DM / mention queries in natural language
+    // 0c. DM search intent — MUST run before general butler check.
+    //     "bring up dms from sage" is a search, not a general fetch.
+    //     Specific always wins over general.
+    try {
+        const searchIntent = await detectDMSearchIntent(userMessage);
+        if (searchIntent.isSearch) {
+            return await runDMSearchReply(userId, ctx, searchIntent.query);
+        }
+    } catch (err) {
+        console.warn("[textHandler] DM search intent check failed:", err);
+    }
+
+    // 0d. General butler intent — catches broad X DM / mention queries
     try {
         const butlerIntent = await detectButlerIntent(userMessage);
         if (butlerIntent === "dms") {
@@ -369,16 +388,6 @@ export async function handleText(
         }
     } catch (err) {
         console.warn("[textHandler] Butler intent check failed:", err);
-    }
-
-    // 0d. DM search intent — find specific DMs by description, sender, topic, etc.
-    try {
-        const searchIntent = await detectDMSearchIntent(userMessage);
-        if (searchIntent.isSearch) {
-            return await runDMSearchReply(userId, ctx, searchIntent.query);
-        }
-    } catch (err) {
-        console.warn("[textHandler] DM search intent check failed:", err);
     }
 
     // 1. Update buffer with user message

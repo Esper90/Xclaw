@@ -409,12 +409,14 @@ export async function searchDMs(
         `You are a DM search engine. The user wants to find DMs matching this description:
 "${query.replace(/"/g, "'")}"
 
-Here are the available DMs (indexed from 0):
+Here are the available DMs (indexed from 0). Each shows the sender username AND message text:
 ${summaries}
 
-Return ONLY a JSON array of index numbers that match the user's description.
-Be generous — include partial matches. If none match, return [].
-Examples: [0,2,5] or [] 
+Return a JSON array of index numbers that match the user's description.
+Match on EITHER the sender's name/username OR the message content — whichever fits.
+Be generous — partial name matches count (e.g. query "from sage" matches sender "sageisthename1").
+If none match, return [].
+Examples: [0,2,5] or []
 Return ONLY the JSON array, no explanation.`
     );
 
@@ -428,10 +430,16 @@ Return ONLY the JSON array, no explanation.`
             );
         }
     } catch {
-        // If Gemini output is unparseable, fall back to simple text search
-        const q = query.toLowerCase();
+        // If Gemini output is unparseable, fall back to simple text + username search
+        const q = query.toLowerCase().replace(/^from\s+/i, "").replace(/@/g, "");
         matchedIndices = allDMs
-            .map((dm, i) => ({ i, match: dm.text.toLowerCase().includes(q) || (dm.senderUsername ?? "").toLowerCase().includes(q) }))
+            .map((dm, i) => ({
+                i,
+                match:
+                    dm.text.toLowerCase().includes(q) ||
+                    (dm.senderUsername ?? "").toLowerCase().includes(q) ||
+                    dm.senderId.toLowerCase().includes(q),
+            }))
             .filter(x => x.match)
             .map(x => x.i);
     }
