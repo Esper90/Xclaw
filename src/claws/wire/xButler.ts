@@ -328,18 +328,21 @@ export async function fetchDMs(
         }
 
         // Step 2: fallback batch lookup for any sender_id the expansion didn't resolve.
-        // This fixes the "senderUsername is undefined for some accounts" X API flakiness.
-        if (unresolvedIds.length > 0) {
-            console.log(`[butler:dm] Expansion missed ${unresolvedIds.length} sender(s) — running batch user lookup`);
+        // Deduplicate first, then batch — GET /2/users?ids=... is v2 and free-tier safe.
+        const uniqueUnresolvedIds = [...new Set(unresolvedIds)];
+        if (uniqueUnresolvedIds.length > 0) {
+            console.log(`[butler:dm] Expansion missed ${uniqueUnresolvedIds.length} unique sender(s): [${uniqueUnresolvedIds.join(",")}] — running batch v2 user lookup`);
             try {
-                const batchResult = await client.v2.users(unresolvedIds, {
+                const batchResult = await client.v2.users(uniqueUnresolvedIds, {
                     "user.fields": ["username", "verified"],
                 } as any);
-                for (const u of batchResult.data ?? []) {
+                const resolved = batchResult.data ?? [];
+                console.log(`[butler:dm] Batch lookup resolved ${resolved.length}/${uniqueUnresolvedIds.length} sender(s):`, resolved.map((u: UserV2) => `@${u.username}(${u.id})`).join(", ") || "none");
+                for (const u of resolved) {
                     usersMap.set(u.id, u);
                 }
             } catch (batchErr) {
-                console.warn("[butler:dm] Batch user lookup failed (non-fatal):", (batchErr as any)?.message ?? batchErr);
+                console.warn("[butler:dm] Batch user lookup failed:", (batchErr as any)?.message ?? batchErr);
             }
         }
     } catch (err: any) {
@@ -453,23 +456,10 @@ async function findDMsFromPerson(query: string): Promise<ButlerDM[]> {
         console.log(`[DM Search DEBUG] userByUsername failed (expected for "${targetName}"): ${e?.message ?? e}`);
     }
 
-    // Step 2: v1 search provides additional candidates (finds sageisthename1 from "sage")
+    // Step 2: v1.searchUsers is blocked on X Free tier (403) — skip it.
+    // Resolution happens via the second-chance individual v2 user lookup in searchDMs.
     const searchCandidates: Array<{ id: string; username: string }> = [];
-    {
-        try {
-            console.log(`[DM Search DEBUG] Running v1.searchUsers("${targetName}", {count:5}) for candidates`);
-            const searchPaginator = await client.v1.searchUsers(targetName, { count: 5 } as any);
-            for await (const user of searchPaginator) {
-                const u = user as any;
-                const candidate = { id: u.id_str ?? String(u.id), username: u.screen_name ?? u.username };
-                searchCandidates.push(candidate);
-                console.log(`[DM Search DEBUG] Search candidate: @${candidate.username} (id: ${candidate.id})`);
-                if (searchCandidates.length >= 5) break;
-            }
-        } catch (e: any) {
-            console.log(`[DM Search DEBUG] v1.searchUsers failed: ${e?.message ?? e}`);
-        }
-    }
+    console.log(`[DM Search DEBUG] v1.searchUsers unavailable on Free tier — relying on broad search + ID resolution fallback`);
 
     // Step 3: try all candidates (exact first, then search results) — pick the first with actual DMs
     const myId = await getMyXUserId();
@@ -557,8 +547,37 @@ export async function searchDMs(
     const allDMs = await fetchDMs(xcUserId, 50, undefined, /* cheapMode */ true, /* rawMode */ true);
     if (allDMs.length === 0) return [];
 
+    // ── Second-chance username resolution ────────────────────────────────────
+    // fetchDMs already tried a batch lookup; this catches any still-unresolved senders
+    // by calling GET /2/users/:id individually (v2 free-tier safe, max 10 calls).
+    const client = getClient();
+    const stillMissing = [...new Map(
+        allDMs.filter(dm => !dm.senderUsername).map(dm => [dm.senderId, dm])
+    ).values()].slice(0, 10);
+
+    if (stillMissing.length > 0) {
+        console.log(`[DM Search DEBUG] ${stillMissing.length} sender(s) still have no username — resolving individually`);
+        for (const dm of stillMissing) {
+            try {
+                const res = await client.v2.user(dm.senderId, { "user.fields": ["username"] } as any);
+                if (res.data?.username) {
+                    console.log(`[DM Search DEBUG] Resolved senderId ${dm.senderId} → @${res.data.username}`);
+                    // Patch all DMs that share this senderId
+                    for (const d of allDMs) {
+                        if (d.senderId === dm.senderId) {
+                            (d as any).senderUsername = res.data.username;
+                        }
+                    }
+                }
+            } catch (e: any) {
+                console.log(`[DM Search DEBUG] Could not resolve ${dm.senderId}: ${e?.message ?? e}`);
+            }
+        }
+    }
+
     const cleanQuery = extractDMTarget(query);
-    console.log(`[DM Search DEBUG] Broad search — extracted target: "${cleanQuery}" across ${allDMs.length} DMs`);
+    console.log(`[DM Search DEBUG] Broad search — extracted target: "${cleanQuery}" across ${allDMs.length} DMs — usernames resolved: ${allDMs.filter(d => d.senderUsername).length}/${allDMs.length}`);
+    console.log(`[DM Search DEBUG] All senderUsernames:`, allDMs.map(d => d.senderUsername ?? `<null:${d.senderId}>`).join(", "));
 
     // ── Step 1: Direct pre-filter (username / text substring) ────────────────
     if (cleanQuery.length >= 2) {
