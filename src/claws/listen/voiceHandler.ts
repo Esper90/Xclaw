@@ -7,6 +7,7 @@ import { synthesizeToFile } from "../sense/tts";
 import { handleText } from "./textHandler";
 import { config } from "../../config";
 import { InputFile } from "grammy";
+import { recordActivity } from "../sense/activityTracker";
 
 const DOWNLOADS_DIR = path.join(os.tmpdir(), "gc-voice");
 
@@ -20,6 +21,10 @@ const DOWNLOADS_DIR = path.join(os.tmpdir(), "gc-voice");
  */
 export async function handleVoice(ctx: BotContext): Promise<void> {
     const userId = String(ctx.from!.id);
+
+    // Track activity for butler background watcher
+    recordActivity(userId);
+
     const voice = ctx.message?.voice ?? ctx.message?.audio;
 
     if (!voice) {

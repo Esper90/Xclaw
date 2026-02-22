@@ -14,6 +14,7 @@ import { registerRoutes } from "./claws/listen/router";
 import { startHeartbeat } from "./claws/sense/heartbeat";
 import { startApiServer } from "./api/server";
 import { injectSendFunction } from "./api/routes/drafts";
+import { startButlerWatcher } from "./claws/wire/xButler";
 
 async function main(): Promise<void> {
     console.log("🦾 Starting Xclaw...");
@@ -41,7 +42,10 @@ async function main(): Promise<void> {
     startHeartbeat(async (chatId, text) => {
         await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
     });
-
+    // ── 6b. Start butler background watcher (15-min X check for active users) ──
+    startButlerWatcher(async (chatId, text) => {
+        await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+    });
     // ── 7. Launch bot (long-polling) ─────────────────────────────────────────
     await bot.start({
         onStart: (info) => {

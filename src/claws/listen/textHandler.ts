@@ -6,6 +6,7 @@ import { routeToModel } from "../wire/modelRouter";
 import { registry } from "../wire/tools/registry";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { config } from "../../config";
+import { recordActivity } from "../sense/activityTracker";
 
 const MIN_MEMORY_SCORE = 0.75;
 
@@ -51,6 +52,9 @@ export async function handleText(
     userMessage: string
 ): Promise<string> {
     const userId = String(ctx.from!.id);
+
+    // Track activity for butler background watcher
+    recordActivity(userId);
 
     // 0. Voice intent check — catches any natural phrasing before full pipeline
     try {

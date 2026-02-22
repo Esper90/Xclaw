@@ -3,6 +3,7 @@ import { apiKeyAuth } from "./auth";
 import { memoryRouter } from "./routes/memory";
 import { draftsRouter } from "./routes/drafts";
 import { threadsRouter } from "./routes/threads";
+import { butlerRouter } from "./routes/butler";
 import { config } from "../config";
 
 /**
@@ -24,6 +25,7 @@ export function startApiServer(): void {
     app.use("/memory", apiKeyAuth, memoryRouter);
     app.use("/drafts", apiKeyAuth, draftsRouter);
     app.use("/threads", apiKeyAuth, threadsRouter);
+    app.use("/butler", apiKeyAuth, butlerRouter);
 
     // ── 404 handler ────────────────────────────────────────────────────────
     app.use((_req, res) => {
