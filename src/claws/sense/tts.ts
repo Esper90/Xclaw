@@ -19,11 +19,40 @@ if (config.GOOGLE_CREDENTIALS.startsWith("{")) {
 
 const client = new textToSpeech.TextToSpeechClient(ttsOptions);
 
+// ── Text Cleaning for TTS ────────────────────────────────────────────────
+/**
+ * Strips markdown symbols and artifacts that sound bad when read by TTS.
+ */
+function cleanTextForTTS(rawText: string): string {
+    return rawText
+        // Remove inline code and code blocks (replace with space to prevent run-on words)
+        .replace(/`{1,3}[^`]*`{1,3}/g, " ")
+        // Remove markdown links, keep the anchor text: [text](url) -> text
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+        // Remove raw URLs
+        .replace(/(?:https?|ftp):\/\/[\n\S]+/g, "")
+        // Remove bold/italics formatting
+        .replace(/[*_]{1,3}/g, "")
+        // Remove headers (e.g. # Header)
+        .replace(/^#{1,6}\s+/gm, "")
+        // Remove list items and blockquotes (e.g. - item, > quote)
+        .replace(/^[-+*>]\s+/gm, "")
+        // Consolidate extra spaces and newlines
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
 /**
  * Convert text to speech using Google Cloud TTS and return an MP3 Buffer.
  * Falls back gracefully: caller should catch errors and send text instead.
  */
-export async function synthesizeSpeech(text: string): Promise<Buffer> {
+export async function synthesizeSpeech(rawText: string): Promise<Buffer> {
+    const text = cleanTextForTTS(rawText);
+
+    if (text.length === 0) {
+        throw new Error("Text was empty after TTS markdown cleaning");
+    }
+
     const request = {
         input: { text },
         // Select the language and SSML voice gender (optional)
