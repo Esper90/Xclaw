@@ -4,6 +4,7 @@ import { handleVoice } from "./voiceHandler";
 import { registerHeartbeat, unregisterHeartbeat } from "../sense/heartbeat";
 import { queryMemory } from "../archive/pinecone";
 import { postTweet } from "../wire/xService";
+import { fetchMentions, fetchDMs } from "../wire/xButler";
 
 /**
  * Register all bot message and command handlers on the bot instance.
@@ -16,10 +17,12 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `🦾 *Xclaw online.*\n\n` +
             `I'm your private AI assistant with long-term memory.\n\n` +
             `*Commands:*\n` +
+            `/mentions — Check important X mentions\n` +
+            `/dms — Check recent X DMs\n` +
+            `/post <text> — Post a tweet to X\n` +
+            `/memory <query> — Search your memories\n` +
             `/voice on|off — Toggle voice replies\n` +
             `/heartbeat on|off — Toggle proactive check-ins\n` +
-            `/memory <query> — Search your memories\n` +
-            `/post <text> — Post a tweet to X\n` +
             `/help — Show this message`,
             { parse_mode: "Markdown" }
         );
@@ -28,8 +31,11 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
     bot.command("help", async (ctx) => {
         await ctx.reply(
             `🦾 *Xclaw — Help*\n\n` +
-            `*X Integration:* You can now post to Twitter directly!\n` +
-            `*/post <text>* — Draft and send a tweet from the bot\n\n` +
+            `*X Butler:* Monitor and reply to your X activity\n` +
+            `*/mentions* — Fetch important @mentions (AI-filtered)\n` +
+            `*/dms* — Fetch recent DMs with reply suggestions\n\n` +
+            `*X Integration:* Post to X directly\n` +
+            `*/post <text>* — Draft and send a tweet\n\n` +
             `*Voice:* Send a voice note and I'll transcribe + respond.\n` +
             `*/voice on* — I reply back with audio\n` +
             `*/voice off* — Text-only replies (default)\n\n` +
@@ -40,6 +46,97 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `*/heartbeat off* — Disable check-ins`,
             { parse_mode: "Markdown" }
         );
+    });
+
+    bot.command("mentions", async (ctx) => {
+        const userId = String(ctx.from!.id);
+        const waitMsg = await ctx.reply("🔍 Checking your X mentions...");
+
+        try {
+            const mentions = await fetchMentions(userId, 10);
+
+            if (mentions.length === 0) {
+                await ctx.api.editMessageText(
+                    ctx.chat.id,
+                    waitMsg.message_id,
+                    `📭 *No important mentions right now.*\n\nEither nothing new, or nothing scored high enough to surface. The butler checks every 15 min automatically.`,
+                    { parse_mode: "Markdown" }
+                );
+                return;
+            }
+
+            let message = `📣 *${mentions.length} important mention${mentions.length > 1 ? "s" : ""}:*\n\n`;
+
+            for (const m of mentions) {
+                message += `👤 @${m.authorUsername ?? m.authorId}\n`;
+                message += `💬 ${m.text.slice(0, 200)}${m.text.length > 200 ? "…" : ""}\n`;
+                message += `📊 Score: ${(m.importanceScore * 100).toFixed(0)}% | ❤️ ${m.engagement}\n`;
+                if (m.suggestedReply) {
+                    message += `💡 *Suggested:* ${m.suggestedReply.slice(0, 180)}\n`;
+                }
+                message += `🔗 https://x.com/i/status/${m.id}\n\n`;
+            }
+
+            await ctx.api.editMessageText(
+                ctx.chat.id,
+                waitMsg.message_id,
+                message.trim(),
+                { parse_mode: "Markdown" }
+            );
+        } catch (err: any) {
+            console.error("[router] /mentions failed:", err);
+            await ctx.api.editMessageText(
+                ctx.chat.id,
+                waitMsg.message_id,
+                `❌ *Failed to fetch mentions:*\n${err.message}`,
+                { parse_mode: "Markdown" }
+            );
+        }
+    });
+
+    bot.command("dms", async (ctx) => {
+        const userId = String(ctx.from!.id);
+        const waitMsg = await ctx.reply("📬 Checking your X DMs...");
+
+        try {
+            const dms = await fetchDMs(userId, 5);
+
+            if (dms.length === 0) {
+                await ctx.api.editMessageText(
+                    ctx.chat.id,
+                    waitMsg.message_id,
+                    `📭 *No DMs to show right now.*\n\nEither inbox is clear or DM permissions aren't enabled on your X app yet.`,
+                    { parse_mode: "Markdown" }
+                );
+                return;
+            }
+
+            let message = `📨 *${dms.length} DM${dms.length > 1 ? "s" : ""}:*\n\n`;
+
+            for (const dm of dms) {
+                message += `👤 @${dm.senderUsername ?? dm.senderId}\n`;
+                message += `💬 ${dm.text.slice(0, 220)}${dm.text.length > 220 ? "…" : ""}\n`;
+                if (dm.suggestedReply) {
+                    message += `💡 *Suggested reply:* ${dm.suggestedReply.slice(0, 200)}\n`;
+                }
+                message += `\n`;
+            }
+
+            await ctx.api.editMessageText(
+                ctx.chat.id,
+                waitMsg.message_id,
+                message.trim(),
+                { parse_mode: "Markdown" }
+            );
+        } catch (err: any) {
+            console.error("[router] /dms failed:", err);
+            await ctx.api.editMessageText(
+                ctx.chat.id,
+                waitMsg.message_id,
+                `❌ *Failed to fetch DMs:*\n${err.message}`,
+                { parse_mode: "Markdown" }
+            );
+        }
     });
 
     bot.command("post", async (ctx) => {
