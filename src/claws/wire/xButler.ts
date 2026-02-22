@@ -312,20 +312,17 @@ export async function fetchDMs(
         // .events is the typed getter on DMTimelineV2Paginator
         events = (dmTimeline.events ?? []) as LocalDMEvent[];
 
-        // Step 1: use the library helper to resolve users from the expansion
-        // (dmTimeline as any).includes?.user(id) is the clean way vs raw .data.includes.users
-        const getIncludedUser = (id?: string): UserV2 | undefined =>
-            id ? (dmTimeline as any).includes?.user(id) : undefined;
+        // Step 1: build usersMap from the expansion (raw .data.includes.users is the
+        // correct accessor for FullDMTimelineV2Paginator in twitter-api-v2 v1.29.0;
+        // the .includes.user() helper does NOT exist in this version)
+        const rawData = (dmTimeline as any).data as { includes?: { users?: UserV2[] } } | undefined;
+        const includedUsers: UserV2[] = rawData?.includes?.users ?? [];
+        usersMap = new Map<string, UserV2>(includedUsers.map((u: UserV2) => [u.id, u]));
 
-        usersMap = new Map<string, UserV2>();
         const unresolvedIds: string[] = [];
-
         for (const ev of events) {
             if (!ev.sender_id) continue;
-            const u = getIncludedUser(ev.sender_id);
-            if (u) {
-                usersMap.set(ev.sender_id, u);
-            } else if (!usersMap.has(ev.sender_id)) {
+            if (!usersMap.has(ev.sender_id)) {
                 unresolvedIds.push(ev.sender_id);
             }
         }
@@ -441,88 +438,92 @@ async function findDMsFromPerson(query: string): Promise<ButlerDM[]> {
     }
 
     const client = getClient();
-    let targetUser: { id: string; username: string } | null = null;
 
-    // Step 1: exact handle (fastest — works when user types @sageisthename1)
+    // Step 1: exact handle — only trust this match if the conversation actually has DMs.
+    // e.g. "sage" matches real account @sage (id:6014) which never DMed us — skip it.
+    let exactCandidates: Array<{ id: string; username: string }> = [];
     try {
         console.log(`[DM Search DEBUG] Trying exact userByUsername("${targetName}")`);
         const exact = await client.v2.userByUsername(targetName);
         if (exact.data) {
-            targetUser = exact.data;
-            console.log(`[DM Search DEBUG] Exact match found: @${targetUser.username} (id: ${targetUser.id})`);
+            exactCandidates = [exact.data];
+            console.log(`[DM Search DEBUG] Exact handle exists: @${exact.data.username} (id: ${exact.data.id}) — will verify has DMs`);
         }
     } catch (e: any) {
         console.log(`[DM Search DEBUG] userByUsername failed (expected for "${targetName}"): ${e?.message ?? e}`);
     }
 
-    // Step 2: v1 search — iterates paginator correctly with for-await
-    if (!targetUser) {
+    // Step 2: v1 search provides additional candidates (finds sageisthename1 from "sage")
+    const searchCandidates: Array<{ id: string; username: string }> = [];
+    {
         try {
-            console.log(`[DM Search DEBUG] Falling back to v1.searchUsers("${targetName}", {count:5})`);
+            console.log(`[DM Search DEBUG] Running v1.searchUsers("${targetName}", {count:5}) for candidates`);
             const searchPaginator = await client.v1.searchUsers(targetName, { count: 5 } as any);
             for await (const user of searchPaginator) {
                 const u = user as any;
-                targetUser = { id: u.id_str ?? String(u.id), username: u.screen_name ?? u.username };
-                console.log(`[DM Search DEBUG] Search found: @${targetUser.username} (id: ${targetUser.id})`);
-                break;  // take the first (most relevant)
+                const candidate = { id: u.id_str ?? String(u.id), username: u.screen_name ?? u.username };
+                searchCandidates.push(candidate);
+                console.log(`[DM Search DEBUG] Search candidate: @${candidate.username} (id: ${candidate.id})`);
+                if (searchCandidates.length >= 5) break;
             }
         } catch (e: any) {
             console.log(`[DM Search DEBUG] v1.searchUsers failed: ${e?.message ?? e}`);
         }
     }
 
-    if (!targetUser) {
-        console.log(`[DM Search DEBUG] ❌ No user found for "${targetName}" at all`);
-        return [];
-    }
-
-    // Step 3: fetch ONLY this conversation
+    // Step 3: try all candidates (exact first, then search results) — pick the first with actual DMs
     const myId = await getMyXUserId();
-    try {
-        console.log(`[DM Search DEBUG] Fetching DMs with participant ${targetUser.id} (@${targetUser.username})`);
-        const timeline = await client.v2.listDmEventsWithParticipant(targetUser.id, {
-            max_results: 20,
-            "dm_event.fields": ["created_at", "sender_id", "dm_conversation_id", "text"],
-            expansions: ["sender_id"],
-            "user.fields": ["username", "verified"],
-        } as any);
-        const events = ((timeline as any).events ?? []) as LocalDMEvent[];
-        console.log(`[DM Search DEBUG] Got ${events.length} raw events from this conversation`);
+    const allCandidates = [...exactCandidates, ...searchCandidates.filter(c => !exactCandidates.some(e => e.id === c.id))];
+    console.log(`[DM Search DEBUG] ${allCandidates.length} total candidates to check for DMs`);
 
-        const inbound = events.filter(ev => ev.sender_id !== myId && ev.text?.trim());
-        console.log(`[DM Search DEBUG] ${inbound.length} inbound events after filtering own messages`);
+    for (const candidate of allCandidates) {
+        try {
+            console.log(`[DM Search DEBUG] Checking DMs with @${candidate.username} (${candidate.id})`);
+            const timeline = await client.v2.listDmEventsWithParticipant(candidate.id, {
+                max_results: 20,
+                "dm_event.fields": ["created_at", "sender_id", "dm_conversation_id", "text"],
+                expansions: ["sender_id"],
+                "user.fields": ["username", "verified"],
+            } as any);
+            const events = ((timeline as any).events ?? []) as LocalDMEvent[];
+            const inbound = events.filter(ev => ev.sender_id !== myId && ev.text?.trim());
+            console.log(`[DM Search DEBUG] @${candidate.username}: ${events.length} events, ${inbound.length} inbound`);
 
-        if (inbound.length === 0) {
-            console.log(`[DM Search DEBUG] ⚠ 0 inbound events — DM exists in X app but not surfaced by API?`);
-            return [];
-        }
-
-        const matched: ButlerDM[] = [];
-        let replyCount = 0;
-        for (const ev of inbound) {
-            let suggestedReply: string | undefined;
-            if (replyCount < MAX_REPLY_SUGGESTIONS) {
-                try { suggestedReply = await suggestReply(ev.text ?? "", [], true); replyCount++; }
-                catch { /* non-fatal */ }
+            if (inbound.length === 0) {
+                console.log(`[DM Search DEBUG] @${candidate.username} has 0 inbound DMs — trying next candidate`);
+                continue;  // ← key fix: wrong user, try next instead of giving up
             }
-            matched.push({
-                id: ev.id,
-                conversationId: (ev as any).dm_conversation_id ?? "",
-                text: ev.text ?? "",
-                senderId: ev.sender_id ?? "",
-                senderUsername: targetUser!.username,   // guaranteed correct
-                createdAt: ev.created_at,
-                importanceScore: 1,
-                matchedMemories: [],
-                suggestedReply,
-            });
+
+            const matched: ButlerDM[] = [];
+            let replyCount = 0;
+            for (const ev of inbound) {
+                let suggestedReply: string | undefined;
+                if (replyCount < MAX_REPLY_SUGGESTIONS) {
+                    try { suggestedReply = await suggestReply(ev.text ?? "", [], true); replyCount++; }
+                    catch { /* non-fatal */ }
+                }
+                matched.push({
+                    id: ev.id,
+                    conversationId: (ev as any).dm_conversation_id ?? "",
+                    text: ev.text ?? "",
+                    senderId: ev.sender_id ?? "",
+                    senderUsername: candidate.username,   // guaranteed correct
+                    createdAt: ev.created_at,
+                    importanceScore: 1,
+                    matchedMemories: [],
+                    suggestedReply,
+                });
+            }
+            console.log(`[DM Search DEBUG] ✅ Returning ${matched.length} DMs from @${candidate.username}`);
+            return matched;
+        } catch (e: any) {
+            console.log(`[DM Search DEBUG] listDmEventsWithParticipant failed for @${candidate.username}: ${e?.message ?? e}`);
         }
-        console.log(`[DM Search DEBUG] ✅ Returning ${matched.length} DMs from @${targetUser.username}`);
-        return matched;
-    } catch (e: any) {
-        console.error(`[DM Search DEBUG] listDmEventsWithParticipant crashed:`, e?.message ?? e);
-        return [];
     }
+
+    // All candidates exhausted with no DMs found
+    console.log(`[DM Search DEBUG] ❌ No candidate had inbound DMs for "${targetName}"`);
+    return [];
 }
 
 /**
