@@ -12,7 +12,7 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
 
     bot.command("start", async (ctx) => {
         await ctx.reply(
-            `🦾 *Gravity Claw online.*\n\n` +
+            `🦾 *Xclaw online.*\n\n` +
             `I'm your private AI assistant with long-term memory.\n\n` +
             `*Commands:*\n` +
             `/voice on|off — Toggle voice replies\n` +
@@ -25,7 +25,7 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
 
     bot.command("help", async (ctx) => {
         await ctx.reply(
-            `🦾 *Gravity Claw — Help*\n\n` +
+            `🦾 *Xclaw — Help*\n\n` +
             `*Voice:* Send a voice note and I'll transcribe + respond.\n` +
             `*/voice on* — I reply back with audio\n` +
             `*/voice off* — Text-only replies (default)\n\n` +
@@ -79,7 +79,7 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
     bot.command("memory", async (ctx) => {
         const query = ctx.match?.trim();
         if (!query) {
-            await ctx.reply("Usage: /memory <search query>\nExample: /memory what did we discuss about Gravity Claw");
+            await ctx.reply("Usage: /memory <search query>\nExample: /memory what did we discuss about Xclaw");
             return;
         }
 

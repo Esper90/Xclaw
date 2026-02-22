@@ -30,7 +30,7 @@ export function unregisterHeartbeat(userId: string): void {
 async function generateHeartbeatMessage(userId: string): Promise<string> {
     const model = genAI.getGenerativeModel({
         model: config.GEMINI_MODEL,
-        systemInstruction: `You are Gravity Claw, a proactive AI assistant. 
+        systemInstruction: `You are Xclaw, a proactive AI assistant. 
 Generate a brief, useful proactive check-in message for your user. 
 Be substantive — share a relevant thought, ask a useful question, or suggest a task focus.
 Keep it to 2-3 sentences maximum. Do not be repetitive or generic.
@@ -65,7 +65,7 @@ export function startHeartbeat(
         for (const [userId, chatId] of heartbeatRegistry.entries()) {
             try {
                 const message = await generateHeartbeatMessage(userId);
-                await sendMessage(chatId, `💡 *Gravity Claw check-in:*\n\n${message}`);
+                await sendMessage(chatId, `💡 *Xclaw check-in:*\n\n${message}`);
                 console.log(`[heartbeat] Sent to userId=${userId}`);
             } catch (err) {
                 console.error(`[heartbeat] Failed for userId=${userId}:`, err);

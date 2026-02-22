@@ -1,5 +1,5 @@
 /**
- * Gravity Claw — Main Entrypoint
+ * Xclaw — Main Entrypoint
  * Boots: Config validation → Tools → Bot → REST API → Heartbeat scheduler
  */
 
@@ -15,7 +15,7 @@ import { startApiServer } from "./api/server";
 import { injectSendFunction } from "./api/routes/drafts";
 
 async function main(): Promise<void> {
-    console.log("🦾 Starting Gravity Claw...");
+    console.log("🦾 Starting Xclaw...");
 
     // ── 1. Attach security middleware ────────────────────────────────────────
     bot.use(authMiddleware);
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
     // ── 7. Launch bot (long-polling) ─────────────────────────────────────────
     await bot.start({
         onStart: (info) => {
-            console.log(`🤖 Gravity Claw is online — @${info.username}`);
+            console.log(`🤖 Xclaw is online — @${info.username}`);
         },
     });
 }
