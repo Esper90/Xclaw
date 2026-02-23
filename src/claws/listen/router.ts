@@ -261,25 +261,29 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
         ctx.session.setupWizard = { step: "consumer_key", partial: {} };
         await ctx.reply(
             `🔑 *Connect your X account to Xclaw*\n\n` +
-            `We need 4 keys from your X Developer App.\n` +
-            `This takes about 3 minutes — follow each step carefully.\n\n` +
+            `We need 4 keys from the X Developer Portal.\n` +
+            `Follow these steps exactly — takes about 3 minutes.\n\n` +
             `─────────\n` +
-            `*🛠 FIRST — Get your X Developer App ready:*\n\n` +
-            `1️⃣ Go to [developer.x.com](https://developer.x.com)\n` +
-            `2️⃣ Sign in with your X account\n` +
-            `3️⃣ Click *"Dashboard"* in the top navigation\n` +
-            `4️⃣ Under *"Projects & Apps"* in the left sidebar, click your app\n` +
-            `   → If you don't have an app yet, click *"+ Create App"*\n\n` +
-            `⚠️ *Important — check your app permissions first:*\n` +
-            `Go to your app → *"Settings"* tab → scroll to *"App permissions"*\n` +
-            `→ Select *"Read and write and Direct Messages"* → Save\n` +
-            `_(If you just changed this, regenerate your Access Token before continuing)_\n\n` +
+            `*Step 1 — Open the portal and find your app*\n\n` +
+            `1️⃣ Go to [developer.x.com](https://developer.x.com) and sign in\n` +
+            `2️⃣ Click *"Apps"* in the left sidebar\n` +
+            `3️⃣ Click on your app name\n` +
+            `   _(No app yet? Click the button to create one first)_\n\n` +
+            `You'll land on a page showing *"OAuth 1.0 Keys"*, *"Bearer Token"*, etc.\n\n` +
             `─────────\n` +
-            `*Step 1 of 4 — Consumer Key (API Key)*\n\n` +
-            `In your app, click the *"Keys and Tokens"* tab\n` +
-            `Under the *"Consumer Keys"* section you'll see *"API Key"*\n` +
-            `Click *"Regenerate"* if you've never copied it before\n\n` +
-            `👇 Paste your *API Key* (Consumer Key) here:`,
+            `*⚠️ Check permissions first (skip if already set)*\n\n` +
+            `On that page, click the small *"Edit settings"* button\n` +
+            `Under *"App permissions"* select:\n` +
+            `✅ *Read and write and Direct message*\n` +
+            `Then click *Save* and go back to the keys page.\n` +
+            `_(If you just changed this, click Regenerate on your Access Token too)_\n\n` +
+            `─────────\n` +
+            `*Step 2 — Get your Consumer Key*\n\n` +
+            `On the keys page, look for the *"OAuth 1.0 Keys"* section.\n` +
+            `You'll see *"Consumer Key"* with a row of dots ●●●●●●●●\n\n` +
+            `👉 Click *"Show"* next to it\n` +
+            `Two values will appear — copy the *first one* (the shorter one)\n\n` +
+            `👇 Paste the *Consumer Key* (first value) here:`,
             { parse_mode: "Markdown", link_preview_options: { is_disabled: true } }
         );
     });
@@ -362,15 +366,14 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
             wizard.partial.consumer_key = trimmed;
             wizard.step = "consumer_secret";
             await ctx.reply(
-                `✅ *API Key saved!*\n\n` +
+                `✅ *Consumer Key saved!*\n\n` +
                 `─────────\n` +
-                `*Step 2 of 4 — Consumer Secret (API Key Secret)*\n\n` +
-                `Stay on the *"Keys and Tokens"* tab — don't close it.\n\n` +
-                `Right below the API Key you just copied, you'll see\n` +
-                `*"API Key Secret"* — that is the Consumer Secret.\n\n` +
-                `💡 It's a longer random string (~50 characters).\n` +
-                `If it's hidden, click *"Regenerate"* to reveal it.\n\n` +
-                `👇 Paste your *API Key Secret* (Consumer Secret) here:`,
+                `*Step 2 of 4 — Consumer Secret*\n\n` +
+                `Same *"Show"* dialog you just used — don't close it.\n\n` +
+                `The *second value* shown below the Consumer Key is the *Consumer Secret*.\n` +
+                `It's a longer random string (~50 characters).\n\n` +
+                `_(If you already closed it, just click "Show" again)_\n\n` +
+                `👇 Paste the *Consumer Secret* (second value) here:`,
                 { parse_mode: "Markdown" }
             );
             break;
@@ -382,16 +385,15 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                 `✅ *Consumer Secret saved!*\n\n` +
                 `─────────\n` +
                 `*Step 3 of 4 — Access Token*\n\n` +
-                `Still on the *"Keys and Tokens"* tab — scroll down a bit.\n\n` +
-                `You'll see a section called *"Authentication Tokens"*.\n` +
-                `Under it, look for *"Access Token and Secret"*.\n\n` +
-                `• If you see a token already — copy it\n` +
-                `• If it shows *"Generate"* — click it first, then copy\n\n` +
-                `⚠️ *X only shows the token ONCE when generated.*\n` +
-                `If you missed it, click *"Regenerate"* to get a new one.\n\n` +
-                `The Access Token looks like: \`1234567890-ABCdefGHIjkl...\`\n` +
-                `(starts with numbers, has a dash, then letters)\n\n` +
-                `👇 Paste your *Access Token* here:`,
+                `Go back to the keys page (same page as before).\n\n` +
+                `Scroll down a little — still under *"OAuth 1.0 Keys"*,\n` +
+                `you'll see *"Access Token"* with a *Regenerate* button.\n\n` +
+                `👉 Click *"Regenerate"*\n\n` +
+                `⚠️ *A dialog will pop up showing TWO values:*\n` +
+                `*Access Token* and *Access Token Secret*\n\n` +
+                `📋 *Copy BOTH right now* before closing the dialog\n` +
+                `(X won't show them again after you close it)\n\n` +
+                `👇 Paste the *Access Token* (first value — starts with numbers and a dash) here:`,
                 { parse_mode: "Markdown" }
             );
             break;
@@ -403,15 +405,12 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                 `✅ *Access Token saved!*\n\n` +
                 `─────────\n` +
                 `*Step 4 of 4 — Access Token Secret*\n\n` +
-                `Almost done! The Access Token Secret was shown *directly below*\n` +
-                `the Access Token when you generated it.\n\n` +
-                `• If you copied it at the time — paste it now\n` +
-                `• If you didn't copy it — click *"Regenerate"* next to\n` +
-                `  "Access Token and Secret" to get a fresh pair,\n` +
-                `  then copy the Secret (the second value shown)\n\n` +
-                `💡 The Access Token Secret is a long random string (~45 chars)\n` +
-                `with no dash — different from the Access Token.\n\n` +
-                `👇 Paste your *Access Token Secret* here:`,
+                `This is the *second value* from the Regenerate dialog you just used.\n\n` +
+                `• If you copied it already — paste it now ✅\n` +
+                `• If you closed the dialog — click *"Regenerate"* on Access Token again\n` +
+                `  to generate a new pair, then copy the second value\n\n` +
+                `💡 It looks like a long random string with no dash (~45 chars)\n\n` +
+                `👇 Paste the *Access Token Secret* (second value) here:`,
                 { parse_mode: "Markdown" }
             );
             break;
