@@ -27,7 +27,7 @@ export const setReminderTool: McpTool = {
 
             const reminder = await createReminder(Number(context.userId), args.text, date.toISOString());
 
-            return `✅ Success: Reminder set. I will ping you on ${date.toLocaleString()} with message: "${reminder.text}"`;
+            return `✅ Success: Reminder set for ${date.toISOString()} (UTC).`;
         } catch (err: any) {
             return `❌ Failed to save reminder: ${err.message}`;
         }
