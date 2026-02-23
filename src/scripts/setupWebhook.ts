@@ -83,10 +83,11 @@ async function setup(): Promise<void> {
 
     let webhookId: string;
     try {
-        // twitter-api-v2's v1.post sends signed OAuth 1.0a requests to /1.1/ endpoints
+        // OAuth 1.0a user-context required for registering
         const result = await (client.v1 as any).post(
             `account_activity/all/${WEBHOOK_ENV}/webhooks.json`,
-            { url: webhookUrl }
+            undefined,
+            { query: { url: webhookUrl } }
         );
         webhookId = result.id;
         console.log(`✅ Webhook registered — ID: ${webhookId}`);
@@ -96,24 +97,22 @@ async function setup(): Promise<void> {
         console.log("\nCommon causes:");
         console.log("  • Bot not deployed / CRC check failed — deploy first, then run this script");
         console.log("  • App doesn't have Account Activity API enabled (Developer Portal → Products)");
-        console.log("  • Webhook already registered — list existing: GET /1.1/account_activity/all/prod/webhooks.json");
+        console.log("  • Webhook already registered — run diagnoseWebhook.ts to see existing ID");
         process.exit(1);
     }
 
     // Step 2: Subscribe user
     console.log("\n[2/2] Subscribing your X account to the webhook...");
     try {
+        // OAuth 1.0a user-context required for subscribing (subscribes the token owner)
         await (client.v1 as any).post(
-            `account_activity/all/${WEBHOOK_ENV}/subscriptions.json`,
-            {}
+            `account_activity/all/${WEBHOOK_ENV}/subscriptions.json`
         );
         console.log("✅ Subscription active!");
     } catch (err: any) {
         const data = err?.data ?? err?.message ?? err;
         console.error("\n❌ Subscription failed:", JSON.stringify(data, null, 2));
         console.log("\nWebhook was registered (ID:", webhookId, ") but subscription failed.");
-        console.log("You can retry just the subscription with:");
-        console.log(`  curl -X POST 'https://api.twitter.com/1.1/account_activity/all/${WEBHOOK_ENV}/subscriptions.json' --oauth ...`);
         process.exit(1);
     }
 
