@@ -16,6 +16,7 @@
  *     x_access_secret    TEXT        NOT NULL,
  *     mention_allowlist  TEXT,
  *     dm_allowlist       TEXT,
+ *     timezone           TEXT,
  *     created_at         TIMESTAMPTZ DEFAULT now()
  *   );
  *
@@ -37,6 +38,8 @@ export interface UserRecord {
     mention_allowlist?: string | null;
     /** Comma-separated handles (no @) — only DMs from these accounts trigger alerts */
     dm_allowlist?: string | null;
+    /** User's local timezone (e.g. 'America/Los_Angeles') */
+    timezone?: string | null;
     created_at?: string;
 }
 

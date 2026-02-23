@@ -34,7 +34,7 @@ export const setReminderTool: McpTool = {
     },
     geminiDeclaration: {
         name: "set_reminder",
-        description: "Set a reliable, persistent reminder for the user to be pinged with at a specific future time.",
+        description: "Set a reliable, persistent alert to ping the user via Telegram at a specific future time. This is the DEFAULT tool for all 'remind me' or 'ping me later' requests.",
         parameters: {
             type: SchemaType.OBJECT,
             properties: {

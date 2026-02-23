@@ -6,7 +6,7 @@ const calendarTool: McpTool = {
     description: "Create a calendar event for the user",
     geminiDeclaration: {
         name: "create_calendar_event",
-        description: "Add an event to the user's calendar. DO NOT use this for simple reminders or alerts. Only use if the user explicitly requests to add something to their calendar.",
+        description: "Create a formal entry on the user's external calendar. NEVER use this for simple notifications, alarms, or 'remind me' requests. Only use if the user specifically mentions the word 'calendar'.",
         parameters: {
             type: SchemaType.OBJECT,
             properties: {

@@ -98,7 +98,7 @@ export async function handleText(
     }
 
     // 3. Build system prompt
-    let systemPrompt = getCorePrompt(userId) + memorySuffix;
+    let systemPrompt = (await getCorePrompt(userId)) + memorySuffix;
 
     // Inject active DMs and Mentions into system prompt context so tools can reference them
     if (ctx.session.pendingDMs?.length > 0) {
