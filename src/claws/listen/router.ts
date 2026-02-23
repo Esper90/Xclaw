@@ -493,19 +493,23 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                     msg.includes("access");
 
                 if (isConsumerBad && !isAccessBad) {
-                    // Reset wizard to consumer_key step, keep access tokens intact
+                    // Error 32 = consumer key mismatch OR access token generated under old consumer key.
+                    // We can't tell which — and regenerating Consumer Keys always invalidates existing
+                    // Access Tokens. Safest = restart all 4 keys with an explanation.
                     wizard.step = "consumer_key";
-                    wizard.partial.consumer_key = undefined;
-                    wizard.partial.consumer_secret = undefined;
+                    wizard.partial = {};
                     wizard.retryMode = true;
                     await ctx.api.editMessageText(
                         ctx.chat?.id ?? telegramId,
                         validating.message_id,
-                        `❌ *Consumer Key or Consumer Secret is incorrect.*\n\n` +
-                        `Your Access Token is fine — you only need to re-enter the first two keys.\n\n` +
-                        `On the X developer portal:\n` +
-                        `Open your app → *"OAuth 1.0 Keys"* section → click *"Show"*\n\n` +
-                        `👇 Re-enter your *Consumer Key* (first value):`,
+                        `❌ *Authentication failed (your keys don't match each other).*\n\n` +
+                        `⚠️ *Important X rule:* When you regenerate your Consumer Key, X automatically invalidates your old Access Token — they are linked.\n\n` +
+                        `To fix: *re-enter all 4 values* using tokens that were generated at the same time.\n\n` +
+                        `*Steps:*\n` +
+                        `1. Open your app on the X developer portal\n` +
+                        `2. *"OAuth 1.0 Keys"* section → click *"Show"* and copy both values\n` +
+                        `3. Then scroll to *"Access Token"* → click *"Regenerate"* → copy both values from the dialog\n\n` +
+                        `👇 Start with your *Consumer Key* (first value from the "Show" dialog):`,
                         { parse_mode: "Markdown" }
                     );
                 } else if (isAccessBad && !isConsumerBad) {
