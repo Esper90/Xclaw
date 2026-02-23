@@ -20,6 +20,7 @@ import { startApiServer } from "./api/server";
 import { injectSendFunction } from "./api/routes/drafts";
 import { startButlerWatcher } from "./claws/wire/xButler";
 import { injectWebhookSender } from "./api/routes/xWebhook";
+import { startReminderWatcher } from "./db/reminderWatcher";
 
 async function main(): Promise<void> {
     console.log("🦾 Starting Xclaw...");
@@ -75,6 +76,12 @@ async function main(): Promise<void> {
             await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
         },
         isSilenced
+    );
+    // ── 6c. Start reminder background watcher (60s exact-time checks) ──────────
+    startReminderWatcher(
+        async (chatId, text) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+        }
     );
     // ── 7. Launch bot (long-polling) ─────────────────────────────────────────
     // Graceful shutdown: tell Telegram to stop polling BEFORE the process exits.
