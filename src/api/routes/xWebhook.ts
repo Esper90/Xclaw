@@ -97,6 +97,27 @@ function verifySignature(req: Request): boolean {
     }
 }
 
+// ── Allowlist helpers ────────────────────────────────────────────────────────
+/**
+ * Parse a comma-separated env var into a lowercase Set of handles.
+ * Returns null (= allow all) when the env var is empty or not set.
+ */
+function parseAllowlist(raw: string | undefined): Set<string> | null {
+    if (!raw?.trim()) return null;
+    const handles = raw.split(",").map((h) => h.trim().toLowerCase().replace(/^@/, "")).filter(Boolean);
+    return handles.length > 0 ? new Set(handles) : null;
+}
+
+const mentionAllowlist = parseAllowlist(config.MENTION_ALLOWLIST);
+const dmAllowlist      = parseAllowlist(config.DM_ALLOWLIST);
+
+if (mentionAllowlist) {
+    console.log(`[x-webhook] 🔒 Mention allowlist active — ${mentionAllowlist.size} handle(s): ${[...mentionAllowlist].join(", ")}`);
+}
+if (dmAllowlist) {
+    console.log(`[x-webhook] 🔒 DM allowlist active — ${dmAllowlist.size} handle(s): ${[...dmAllowlist].join(", ")}`);
+}
+
 // ── Telegram message formatters ───────────────────────────────────────────────
 function formatDMAlert(username: string, text: string): string {
     return (
@@ -196,6 +217,12 @@ xWebhookRouter.post("/", async (req: Request, res: Response) => {
             lookupKnownSender(sender_id)?.username ??
             (await resolveXUserId(sender_id));
 
+        // DM allowlist check
+        if (dmAllowlist && !dmAllowlist.has(username.toLowerCase())) {
+            console.log(`[x-webhook] 📩 DM from @${username} — filtered (not in DM_ALLOWLIST)`);
+            continue;
+        }
+
         console.log(`[x-webhook] 📩 DM from @${username}: "${text.slice(0, 80)}"`);
 
         try {
@@ -216,6 +243,12 @@ xWebhookRouter.post("/", async (req: Request, res: Response) => {
 
         const username = tweet.user?.screen_name ?? tweet.user?.id_str;
         const text = tweet.full_text ?? tweet.text;
+
+        // Mention allowlist check
+        if (mentionAllowlist && !mentionAllowlist.has(username.toLowerCase())) {
+            console.log(`[x-webhook] 🔔 Mention from @${username} — filtered (not in MENTION_ALLOWLIST)`);
+            continue;
+        }
 
         console.log(`[x-webhook] 🔔 Mention from @${username}: "${text.slice(0, 80)}"`);
 

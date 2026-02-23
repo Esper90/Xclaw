@@ -44,6 +44,13 @@ const schema = z.object({
     X_CONSUMER_SECRET: z.string().optional(),
     X_ACCESS_TOKEN: z.string().optional(),
     X_ACCESS_SECRET: z.string().optional(),
+
+    // X Webhook allowlists (optional — comma-separated handles without @)
+    // When set, only these accounts trigger Telegram alerts.
+    // Leave unset (or empty) to receive alerts from everyone.
+    // Example: MENTION_ALLOWLIST=sageisthename1,elonmusk
+    MENTION_ALLOWLIST: z.string().optional(),
+    DM_ALLOWLIST: z.string().optional(),
 });
 
 function parseConfig() {
