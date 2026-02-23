@@ -422,25 +422,42 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
             wizard.partial.access_secret = trimmed;
             const validating = await ctx.reply("🔄 Validating credentials with X API…");
 
+            // ── Step 1: Validate X credentials ────────────────────────────
+            let xMe: Awaited<ReturnType<typeof TwitterApi.prototype.v1.verifyCredentials>>;
             try {
-                // Log sanitized key lengths so we can confirm no invisible chars crept through
                 console.log("[setup:validate] key lengths:", {
                     consumer_key: wizard.partial.consumer_key!.length,
                     consumer_secret: wizard.partial.consumer_secret!.length,
                     access_token: wizard.partial.access_token!.length,
                     access_secret: trimmed.length,
                 });
-                // Verify credentials live using v1.1 verifyCredentials — the most reliable
-                // OAuth 1.0a test endpoint; returns user object on success, throws on failure.
                 const testClient = new TwitterApi({
                     appKey: wizard.partial.consumer_key!,
                     appSecret: wizard.partial.consumer_secret!,
                     accessToken: wizard.partial.access_token!,
                     accessSecret: trimmed,
                 });
-                const xMe = await testClient.v1.verifyCredentials();
+                xMe = await testClient.v1.verifyCredentials();
+            } catch (err: any) {
+                const rawDump = JSON.stringify(err, Object.getOwnPropertyNames(err), 2);
+                console.error("[setup:validate] X AUTH ERROR:", rawDump);
+                const snippet = rawDump.length > 500 ? rawDump.slice(0, 500) + "…" : rawDump;
+                wizard.step = "consumer_key";
+                wizard.partial = {};
+                wizard.retryMode = true;
+                await ctx.api.editMessageText(
+                    ctx.chat?.id ?? telegramId,
+                    validating.message_id,
+                    `❌ *X rejected these credentials.*\n\n` +
+                    `\`\`\`\n${snippet}\n\`\`\`\n\n` +
+                    `Re-enter all 4 keys — start with your *Consumer Key*:`,
+                    { parse_mode: "Markdown" }
+                );
+                break;
+            }
 
-                // Persist to Supabase
+            // ── Step 2: Save to Supabase ───────────────────────────────────
+            try {
                 await upsertUser({
                     telegram_id: telegramId,
                     x_user_id: String(xMe.id_str ?? xMe.id),
@@ -451,55 +468,50 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                     x_access_secret: trimmed,
                 });
                 invalidateUserXClient(telegramId);
-
-                // Register & subscribe the per-user webhook
-                let webhookNote = "";
-                try {
-                    const wh = await registerAndSubscribeWebhook(
-                        wizard.partial.consumer_key!,
-                        wizard.partial.consumer_secret!,
-                        wizard.partial.access_token!,
-                        trimmed,
-                        telegramId
-                    );
-                    webhookNote = wh.subscribed
-                        ? `\n\n✅ *Real-time alerts active!* DMs and mentions will arrive here instantly.\nWebhook ID: \`${wh.webhookId}\``
-                        : `\n\n⚠️ Credentials saved but webhook subscription failed. Run /setup again to retry.`;
-                } catch (whErr: any) {
-                    webhookNote = `\n\n⚠️ Credentials saved, but webhook setup failed: ${whErr.message}\nRun /setup again to retry.`;
-                }
-
+            } catch (dbErr: any) {
+                console.error("[setup:validate] SUPABASE ERROR:", dbErr?.message);
                 ctx.session.setupWizard = null;
                 await ctx.api.editMessageText(
                     ctx.chat?.id ?? telegramId,
                     validating.message_id,
-                    `✅ *Connected as @${xMe.screen_name}!*\n\n` +
-                    `Your credentials are stored securely in the database.` +
-                    webhookNote +
-                    `\n\n_Use /deletekeys to disconnect at any time._`,
-                    { parse_mode: "Markdown" }
-                );
-            } catch (err: any) {
-                // Dump complete error shape — include all own properties
-                const rawDump = JSON.stringify(err, Object.getOwnPropertyNames(err), 2);
-                console.error("[setup:validate] RAW ERROR:", rawDump);
-
-                // Show truncated raw error directly in Telegram for diagnosis
-                const snippet = rawDump.length > 600 ? rawDump.slice(0, 600) + "…" : rawDump;
-                wizard.step = "consumer_key";
-                wizard.partial = {};
-                wizard.retryMode = true;
-                await ctx.api.editMessageText(
-                    ctx.chat?.id ?? telegramId,
-                    validating.message_id,
-                    `❌ *Validation failed*\n\n` +
-                    `\`\`\`\n${snippet}\n\`\`\`\n\n` +
-                    `Please screenshot this and share it so we can diagnose.\n\n` +
-                    `Then re-enter all 4 keys — start with your *Consumer Key*:`,
+                    `⚠️ *X credentials are valid (@${xMe.screen_name}) but database save failed.*\n\n` +
+                    `Error: \`${dbErr?.message ?? "unknown"}\`\n\n` +
+                    `*Fix:* Set these environment variables in Railway:\n` +
+                    `• \`SUPABASE_URL\` — Project Settings → API → Project URL\n` +
+                    `• \`SUPABASE_SERVICE_KEY\` — Project Settings → API → \`service_role\` key\n\n` +
+                    `Then run /setup again.`,
                     { parse_mode: "Markdown" }
                 );
                 break;
             }
+
+            // ── Step 3: Register webhook ───────────────────────────────────
+            let webhookNote = "";
+            try {
+                const wh = await registerAndSubscribeWebhook(
+                    wizard.partial.consumer_key!,
+                    wizard.partial.consumer_secret!,
+                    wizard.partial.access_token!,
+                    trimmed,
+                    telegramId
+                );
+                webhookNote = wh.subscribed
+                    ? `\n\n✅ *Real-time alerts active!* DMs and mentions will arrive here instantly.\nWebhook ID: \`${wh.webhookId}\``
+                    : `\n\n⚠️ Credentials saved but webhook subscription failed. Run /setup again to retry.`;
+            } catch (whErr: any) {
+                webhookNote = `\n\n⚠️ Credentials saved, but webhook setup failed: ${whErr.message}\nRun /setup again to retry.`;
+            }
+
+            ctx.session.setupWizard = null;
+            await ctx.api.editMessageText(
+                ctx.chat?.id ?? telegramId,
+                validating.message_id,
+                `✅ *Connected as @${xMe.screen_name}!*\n\n` +
+                `Your credentials are stored securely in the database.` +
+                webhookNote +
+                `\n\n_Use /deletekeys to disconnect at any time._`,
+                { parse_mode: "Markdown" }
+            );
             break;
         }
     }
