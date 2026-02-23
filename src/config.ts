@@ -55,8 +55,8 @@ const schema = z.object({
     // ─── Supabase (multi-user credential store) ──────────────────────────────
     // Required for the user-owned-keys model.
     // Dashboard → Project Settings → API → URL and service_role secret key.
-    SUPABASE_URL: z.string().url().optional(),
-    SUPABASE_SERVICE_KEY: z.string().min(10).optional(),
+    SUPABASE_URL: z.string().trim().url().optional(),
+    SUPABASE_SERVICE_KEY: z.string().trim().min(10).optional(),
 
     // Public Railway URL — needed so /setup can print the correct webhook URL to register
     RAILWAY_URL: z.string().optional(),

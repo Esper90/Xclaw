@@ -50,7 +50,11 @@ export function getSupabase(): SupabaseClient {
             "Supabase not configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY in Railway env vars."
         );
     }
-    _supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_KEY);
+    // Trim both values — Railway sometimes adds trailing whitespace/newlines when pasting
+    const url = config.SUPABASE_URL.trim();
+    const key = config.SUPABASE_SERVICE_KEY.trim();
+    console.log("[supabase] connecting to:", url, "| key length:", key.length);
+    _supabase = createClient(url, key);
     return _supabase;
 }
 
