@@ -37,9 +37,9 @@ import { TwitterApi } from "twitter-api-v2";
 // ── Config ────────────────────────────────────────────────────────────────────
 const RAILWAY_URL =
     process.env.RAILWAY_WEBHOOK_URL?.replace(/\/$/, "") ??
-    process.env.RAILWAY_PUBLIC_DOMAIN
+    (process.env.RAILWAY_PUBLIC_DOMAIN
         ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-        : null;
+        : null);
 
 if (!RAILWAY_URL) {
     console.error(
@@ -82,28 +82,47 @@ async function setup(): Promise<void> {
     console.log(`\n🔗 Webhook URL : ${webhookUrl}`);
     console.log(`\n─────────────────────────────────────────`);
 
-    // Step 1: Register webhook — POST /2/webhooks (Bearer Token)
-    console.log("\n[1/2] Registering webhook with X (POST /2/webhooks)...");
-    console.log("      (X will send a CRC ping to your server — make sure it's online)");
+    // Step 1: Register webhook (or reuse existing) — POST /2/webhooks (Bearer Token)
+    console.log("\n[1/2] Checking / registering webhook...");
 
     let webhookId: string;
+
+    // Check for an existing registered webhook first
     try {
-        const result = await (appClient.v2 as any).post(
-            "webhooks",
-            undefined,
-            { query: { url: webhookUrl } }
-        );
-        webhookId = result?.data?.id ?? result?.id;
-        if (!webhookId) throw new Error("No webhook ID in response: " + JSON.stringify(result));
-        console.log(`✅ Webhook registered — ID: ${webhookId}`);
-    } catch (err: any) {
-        const data = err?.data ?? err?.message ?? err;
-        console.error("\n❌ Webhook registration failed:", JSON.stringify(data, null, 2));
-        console.log("\nCommon causes:");
-        console.log("  • Bot not deployed / CRC check failed — deploy first, then run this script");
-        console.log("  • App doesn't have Account Activity API enabled (Developer Portal → Products)");
-        console.log("  • Webhook already registered — run diagnoseWebhook.ts to see existing ID");
-        process.exit(1);
+        const existing = await (appClient.v2 as any).get("webhooks");
+        const webhooks: any[] = existing?.data ?? [];
+        const match = webhooks.find((w: any) => w.url === webhookUrl) ?? webhooks[0];
+        if (match) {
+            webhookId = match.id;
+            console.log(`✅ Webhook already registered — ID: ${webhookId} (valid: ${match.valid})`);
+            if (!match.valid) {
+                console.log("  ⚠ Webhook marked invalid — triggering CRC re-validation...");
+                await (appClient.v2 as any).put(`webhooks/${webhookId}`);
+                console.log("  CRC re-sent.");
+            }
+        } else {
+            throw new Error("no existing webhooks");
+        }
+    } catch (_existingErr) {
+        // No existing webhook — register a new one
+        console.log("      No existing webhook — registering new (X will send a CRC ping)...");
+        try {
+            const result = await (appClient.v2 as any).post(
+                "webhooks",
+                undefined,
+                { query: { url: webhookUrl } }
+            );
+            webhookId = result?.data?.id ?? result?.id;
+            if (!webhookId) throw new Error("No webhook ID in response: " + JSON.stringify(result));
+            console.log(`✅ Webhook registered — ID: ${webhookId}`);
+        } catch (err: any) {
+            const data = err?.data ?? err?.message ?? err;
+            console.error("\n❌ Webhook registration failed:", JSON.stringify(data, null, 2));
+            console.log("\nCommon causes:");
+            console.log("  • Bot not deployed / CRC check failed — deploy first, then run this script");
+            console.log("  • App doesn't have Account Activity API enabled (Developer Portal → Products)");
+            process.exit(1);
+        }
     }
 
     // Step 2: Subscribe user — POST /2/account_activity/webhooks/:id/subscriptions/all (OAuth 1.0a)

@@ -85,14 +85,15 @@ async function diagnose(): Promise<void> {
             const subs = await (appClient.v2 as any).get(
                 `account_activity/webhooks/${firstWebhookId}/subscriptions/all/list`
             );
-            const list: any[] = subs?.data ?? [];
+            // Response shape: { data: { subscriptions: [...], webhook_id, webhook_url, application_id } }
+            const list: any[] = subs?.data?.subscriptions ?? subs?.subscriptions ?? subs?.data ?? [];
             if (list.length === 0) {
                 console.log("❌ No subscriptions — this is why events aren't being delivered!");
                 console.log("   Run: npx ts-node src/scripts/setupWebhook.ts");
             } else {
                 console.log(`✅ ${list.length} subscription(s) active:`);
                 for (const sub of list) {
-                    console.log(`  User ID: ${sub.user_id}`);
+                    console.log(`  User ID: ${sub.user_id ?? sub.id ?? JSON.stringify(sub)}`);
                 }
             }
         } catch (err: any) {
