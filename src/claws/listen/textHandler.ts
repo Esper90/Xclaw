@@ -51,7 +51,7 @@ async function detectButlerIntent(message: string): Promise<"dms" | "mentions" |
 This is for a GENERAL inbox fetch — NOT a specific search for a particular DM.
 
 DMS examples (general fetch, no specific person/topic): "check my dms", "any new messages", "what's in my inbox", "any dms?", "show me my messages"
-MENTIONS examples: "any mentions", "who mentioned me", "anything important on x", "what's new on twitter", "any replies", "check my mentions", "anything going on on x"
+MENTIONS examples: "any mentions", "who mentioned me", "anything important on x", "what's new on twitter", "any replies", "check my mentions", "anything going on on x", "show me my last mention", "my last mention", "last mention", "what are my mentions", "my recent mentions"
 NONE examples: anything asking for a specific DM by person/topic/content, general questions unrelated to X
 
 Reply with exactly one word. Options: dms / mentions / none
@@ -142,10 +142,19 @@ SEARCH examples — extract the core search query:
 - "show me the dm from the ads team" → query: "from ads team"
 - "the dm about the partnership" → query: "about partnership"
 
-NOT SEARCH (return isSearch: false) — these are general inbox checks with no specific target:
+NOT SEARCH (return isSearch: false):
 - "check my dms"
 - "any new messages?"
 - "what's in my inbox"
+- "show me my last mention" ← this is about X @mentions, NOT a DM search
+- "show me my mentions"
+- "what are my mentions"
+- "any mentions?"
+- "who mentioned me"
+- "check my mentions"
+- "last mention"
+- "my recent mentions"
+IMPORTANT: Anything about "mentions" (being @tagged or replied to on X) is NOT a DM search — return isSearch: false.
 
 Return ONLY valid JSON: {"isSearch": true, "query": "the search query"} or {"isSearch": false, "query": ""}
 No explanation, no markdown, no code block.
