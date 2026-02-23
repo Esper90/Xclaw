@@ -302,6 +302,27 @@ export async function fetchMentions(
         });
     }
 
+    // ── Persist each surfaced mention to Pinecone (fire-and-forget, idempotent) ─
+    // Stable ID = xcUserId-mention-tweetId, so re-fetching the same mention
+    // never creates a duplicate vector. Stored tweet text is the raw content
+    // so semantic search ("that mention about the collab") works correctly.
+    Promise.allSettled(
+        important.map((m) =>
+            upsertMemory(
+                xcUserId,
+                m.text,
+                {
+                    source: "butler_mention",
+                    tweetId: m.id,
+                    authorId: m.authorId,
+                    authorUsername: m.authorUsername ?? "",
+                    createdAt: m.createdAt ?? "",
+                },
+                `${xcUserId}-mention-${m.id}` // stable — safe to re-upsert
+            )
+        )
+    ).catch((e) => console.warn("[butler] mention Pinecone persist error:", e));
+
     return important;
 }
 
@@ -774,6 +795,47 @@ Return ONLY the JSON array, no explanation.`
     }
 
     return matched;
+}
+
+/**
+ * Search past mentions by semantic context — e.g. "that mention from bob",
+ * "the one about the collab", "find the mention from @guy".
+ *
+ * Queries Pinecone for `source: "butler_mention"` vectors matching the query.
+ * Returns up to `limit` matches as PendingMention-compatible objects with
+ * freshly-generated reply suggestions.
+ *
+ * Mentions are persisted to Pinecone inside `fetchMentions`, so any mention
+ * the user has ever been shown is searchable here — even across sessions.
+ */
+export async function searchMentionsByContext(
+    xcUserId: string,
+    query: string,
+    limit = 5
+): Promise<Array<{ id: string; authorId: string; authorUsername: string; text: string; suggestedReply?: string }>> {
+    // Cast a wide net (topK=20) then filter to mention records only
+    const results = await queryMemory(xcUserId, query, 20);
+    const mentionResults = results
+        .filter((r) => r.metadata?.source === "butler_mention")
+        .slice(0, limit);
+
+    if (mentionResults.length === 0) return [];
+
+    const out: Array<{ id: string; authorId: string; authorUsername: string; text: string; suggestedReply?: string }> = [];
+    for (const r of mentionResults) {
+        const tweetId = r.metadata?.tweetId ?? r.id;
+        const authorId = r.metadata?.authorId ?? "";
+        const authorUsername = r.metadata?.authorUsername ?? "";
+        const tweetText = r.text; // raw tweet text stored at upsert time
+
+        let suggestedReply: string | undefined;
+        try {
+            suggestedReply = await suggestReply(tweetText, [], false);
+        } catch { /* non-fatal */ }
+
+        out.push({ id: tweetId, authorId, authorUsername, text: tweetText, suggestedReply });
+    }
+    return out;
 }
 
 /**

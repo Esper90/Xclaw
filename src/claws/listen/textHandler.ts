@@ -7,7 +7,7 @@ import { registry } from "../wire/tools/registry";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { config } from "../../config";
 import { recordActivity } from "../sense/activityTracker";
-import { fetchMentions, fetchDMs, postButlerReply, searchDMs } from "../wire/xButler";
+import { fetchMentions, fetchDMs, postButlerReply, searchDMs, searchMentionsByContext } from "../wire/xButler";
 import type { PendingDM, PendingMention } from "../connect/session";
 
 const LABELS = "ABCDEFGHIJKLMNOP".split("");
@@ -321,6 +321,108 @@ async function runDMSearchReply(userId: string, ctx: BotContext, query: string):
 }
 
 /**
+ * Detect if the user is searching for a SPECIFIC past mention by context —
+ * e.g. "that mention from bob", "find the mention about the collab",
+ * "reply to that mention from @guy".
+ *
+ * Returns { isSearch, query, impliedReply } where `impliedReply` means the
+ * user wants to reply immediately after finding (e.g. "reply to that mention from X").
+ */
+async function detectMentionSearchIntent(
+    message: string
+): Promise<{ isSearch: boolean; query: string; impliedReply: boolean }> {
+    const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
+    const result = await model.generateContent(
+        `You are a classifier. Is the user trying to FIND or RETRIEVE a specific past X (Twitter) mention by description, person, or content?
+
+SEARCH examples — extract the core search query and detect if they also want to reply:
+- "that mention from bob" → {"isSearch":true,"query":"mention from bob","impliedReply":false}
+- "find the mention from @bobtheguy" → {"isSearch":true,"query":"from @bobtheguy","impliedReply":false}
+- "the mention about the collab" → {"isSearch":true,"query":"about the collab","impliedReply":false}
+- "can you find the mention where someone asked about pricing" → {"isSearch":true,"query":"someone asked about pricing","impliedReply":false}
+- "reply to that mention from sage" → {"isSearch":true,"query":"from sage","impliedReply":true}
+- "find that mention from mark and reply" → {"isSearch":true,"query":"from mark","impliedReply":true}
+- "that tweet where someone mentioned me about the deal" → {"isSearch":true,"query":"mentioned about the deal","impliedReply":false}
+- "look up the mention from the marketing guy" → {"isSearch":true,"query":"from marketing guy","impliedReply":false}
+
+NOT SEARCH (return isSearch: false) — these are NOT specific mention lookups:
+- "show me my mentions" ← general fetch, not a search
+- "check my mentions"
+- "any new mentions?"
+- "who mentioned me"
+- "any dms?"
+- general questions unrelated to X mentions
+
+IMPORTANT: Only return isSearch:true if the user is looking for a SPECIFIC mention (by person, topic, or content). General "show my mentions" requests are NOT searches.
+
+Return ONLY valid JSON with no explanation or markdown.
+
+Message: "${message.replace(/"/g, "'")}"`
+    );
+
+    try {
+        const raw = result.response.text().trim().replace(/^```json\n?|```$/g, "").trim();
+        const parsed = JSON.parse(raw);
+        if (parsed.isSearch === true && typeof parsed.query === "string" && parsed.query.length > 0) {
+            return { isSearch: true, query: parsed.query, impliedReply: parsed.impliedReply === true };
+        }
+    } catch { /* fall through */ }
+    return { isSearch: false, query: "", impliedReply: false };
+}
+
+/**
+ * Search past mentions semantically via Pinecone memory and format results.
+ * Loads into pendingMentions so the user can say "reply to A" naturally after.
+ * If impliedReply=true, automatically triggers reply on the first result.
+ */
+async function runMentionSearchReply(
+    userId: string,
+    ctx: BotContext,
+    query: string,
+    impliedReply = false
+): Promise<string> {
+    const mentions = await searchMentionsByContext(userId, query);
+
+    if (mentions.length === 0) {
+        return (
+            `🔍 *No past mention found matching:* "${query}"\n\n` +
+            `I searched your mention history but couldn't find a match.\n` +
+            `💡 Try: _"show me my mentions"_ to fetch fresh ones first, then search again.`
+        );
+    }
+
+    // Load into session so the user can follow up with "reply to A"
+    ctx.session.pendingMentions = mentions.map((m, i) => ({
+        label: LABELS[i] ?? String(i + 1),
+        id: m.id,
+        authorId: m.authorId,
+        authorUsername: m.authorUsername,
+        text: m.text,
+        suggestedReply: m.suggestedReply,
+    }));
+
+    let msg = `🔍 *Found ${mentions.length} mention${mentions.length > 1 ? "s" : ""} matching "${query}":*\n\n`;
+    for (const p of ctx.session.pendingMentions) {
+        msg += `*[${p.label}]* 👤 @${p.authorUsername || p.authorId}\n`;
+        msg += `💬 ${p.text.slice(0, 220)}${p.text.length > 220 ? "…" : ""}\n`;
+        if (p.suggestedReply) {
+            msg += `💡 *Suggested reply:* ${p.suggestedReply.slice(0, 200)}\n`;
+        }
+        msg += `🔗 https://x.com/i/status/${p.id}\n\n`;
+    }
+
+    // If the user asked to reply in the same message, automatically trigger on first match
+    if (impliedReply && ctx.session.pendingMentions.length > 0) {
+        const firstLabel = ctx.session.pendingMentions[0].label;
+        const replyResult = await executeMentionReply(userId, ctx, [firstLabel]);
+        return msg.trim() + "\n\n" + replyResult;
+    }
+
+    msg += `_Say "reply to A", "reply to all", or "reply to B but add…"_`;
+    return msg.trim();
+}
+
+/**
  * Detect if the user wants to reply to one or more pending DMs.
  * Returns targets like ["A"], ["all"], ["B","C"] and an optional custom instruction.
  * Only called when pendingDMs.length > 0 to save tokens.
@@ -514,6 +616,17 @@ export async function handleText(
         }
     } catch (err) {
         console.warn("[textHandler] DM search intent check failed:", err);
+    }
+
+    // 0d. Mention search intent — "that mention from bob", "find the mention about X"
+    //     Queries Pinecone for past mentions so the butler remembers across sessions.
+    try {
+        const mentionSearchIntent = await detectMentionSearchIntent(userMessage);
+        if (mentionSearchIntent.isSearch) {
+            return await runMentionSearchReply(userId, ctx, mentionSearchIntent.query, mentionSearchIntent.impliedReply);
+        }
+    } catch (err) {
+        console.warn("[textHandler] Mention search intent check failed:", err);
     }
 
     // 0d. General butler intent — catches broad X DM / mention queries

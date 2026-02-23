@@ -26,13 +26,16 @@ async function embed(text: string): Promise<number[]> {
 
 /**
  * Upsert a memory chunk into the user's Pinecone namespace.
+ * Pass a stable `customId` to make the upsert idempotent (e.g. per-tweet mentions).
+ * When omitted a timestamp-based ID is generated.
  */
 export async function upsertMemory(
     userId: string,
     text: string,
-    metadata: Record<string, string> = {}
+    metadata: Record<string, string> = {},
+    customId?: string
 ): Promise<string> {
-    const id = `${userId}-${Date.now()}`;
+    const id = customId ?? `${userId}-${Date.now()}`;
     const values = await embed(text);
 
     await index.namespace(userId).upsert([
