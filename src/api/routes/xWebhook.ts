@@ -212,7 +212,7 @@ xWebhookRouter.post("/", async (req: Request, res: Response) => {
         const username =
             payloadUser?.screen_name ??
             lookupKnownSender(sender_id)?.username ??
-            (await resolveXUserId(sender_id));
+            (await resolveXUserId(sender_id, defaultChatId()));
 
         // DM allowlist check
         if (dmAllowlist && !dmAllowlist.has(username.toLowerCase())) {

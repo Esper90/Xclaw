@@ -39,11 +39,12 @@ export async function postTweet(
             : await getLegacyClient();
         console.log(`[X] Attempting to post tweet: "${text.substring(0, 50)}..."${replyToId ? ` (reply to ${replyToId})` : ""}${mediaIds ? ` (+${mediaIds.length} media)` : ""}`);
 
-        const { data: createdTweet } = await client.v2.tweet({
+        const parameters: any = {
             text,
             ...(replyToId ? { reply: { in_reply_to_tweet_id: replyToId } } : {}),
             ...(mediaIds && mediaIds.length > 0 ? { media: { media_ids: mediaIds as [string, ...string[]] } } : {}),
-        });
+        };
+        const { data: createdTweet } = await client.v2.tweet(parameters);
 
         console.log(`[X] Tweet posted successfully! ID: ${createdTweet.id}`);
         return createdTweet.id;
