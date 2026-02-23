@@ -2,8 +2,14 @@
  * Diagnose X Account Activity webhook subscriptions.
  * Run this to see exactly what webhooks and subscriptions are registered.
  *
+ * Uses X API v2 endpoints:
+ *   GET /2/webhooks                                             — list webhooks (Bearer Token)
+ *   GET /2/account_activity/webhooks/:id/subscriptions/all/list — list subscriptions (Bearer Token)
+ *
  * Usage:
  *   npx ts-node src/scripts/diagnoseWebhook.ts
+ *
+ * Optional: set TWITTER_BEARER_TOKEN in env to skip the appLogin() round-trip.
  */
 
 import "dotenv/config";
@@ -14,15 +20,13 @@ const {
     X_CONSUMER_SECRET,
     X_ACCESS_TOKEN,
     X_ACCESS_SECRET,
-    X_WEBHOOK_ENV,
+    TWITTER_BEARER_TOKEN,
 } = process.env;
 
 if (!X_CONSUMER_KEY || !X_CONSUMER_SECRET || !X_ACCESS_TOKEN || !X_ACCESS_SECRET) {
     console.error("❌ Missing X_ env vars");
     process.exit(1);
 }
-
-const env = X_WEBHOOK_ENV ?? "prod";
 
 async function diagnose(): Promise<void> {
     // OAuth 1.0a user-context client — for authenticated user identity
@@ -33,8 +37,10 @@ async function diagnose(): Promise<void> {
         accessSecret: X_ACCESS_SECRET!,
     });
 
-    // App-only Bearer Token client — required by Account Activity listing endpoints
-    const appClient = await userClient.appLogin();
+    // App-only Bearer Token client — required for v2 webhook management endpoints
+    const appClient = TWITTER_BEARER_TOKEN
+        ? new TwitterApi(TWITTER_BEARER_TOKEN)
+        : await userClient.appLogin();
 
     console.log(`\n── Authenticated as ──────────────────────────────`);
     try {
@@ -46,16 +52,12 @@ async function diagnose(): Promise<void> {
         console.error("Failed to get authenticated user:", err);
     }
 
-    console.log(`\n── Registered webhooks (env: ${env}) ──────────────`);
+    console.log(`\n── Registered webhooks (GET /2/webhooks) ──────────`);
     let firstWebhookId: string | undefined;
     try {
-        // Bearer token required — use appClient
-        const result = await (appClient.v1 as any).get(
-            `account_activity/all/webhooks.json`
-        );
-        const webhooks = result?.environments
-            ?.find((e: any) => e.environment_name === env)
-            ?.webhooks ?? [];
+        // v2 endpoint — Bearer Token required
+        const result = await (appClient.v2 as any).get("webhooks");
+        const webhooks: any[] = result?.data ?? [];
         if (webhooks.length === 0) {
             console.log("No webhooks registered.");
             console.log("   Run: npx ts-node src/scripts/setupWebhook.ts");
@@ -79,11 +81,11 @@ async function diagnose(): Promise<void> {
         console.log("Cannot check subscriptions — no webhook ID found above.");
     } else {
         try {
-            // Bearer token required — use appClient
-            const subs = await (appClient.v1 as any).get(
-                `account_activity/all/${env}/subscriptions/list.json`
+            // v2 endpoint — Bearer Token required
+            const subs = await (appClient.v2 as any).get(
+                `account_activity/webhooks/${firstWebhookId}/subscriptions/all/list`
             );
-            const list = subs?.subscriptions ?? [];
+            const list: any[] = subs?.data ?? [];
             if (list.length === 0) {
                 console.log("❌ No subscriptions — this is why events aren't being delivered!");
                 console.log("   Run: npx ts-node src/scripts/setupWebhook.ts");

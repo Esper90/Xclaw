@@ -13,10 +13,10 @@
  *   npx ts-node src/scripts/setupWebhook.ts
  *
  * What it does:
- *   1. Calls POST /1.1/account_activity/all/{env}/webhooks.json
+ *   1. POST /2/webhooks?url=<URL>  (Bearer Token / OAuth2 App-Only)
  *      → Registers https://<RAILWAY_URL>/x-webhook as the endpoint
  *      → X immediately sends a CRC GET to verify it — your deployed server must be live
- *   2. Calls POST /1.1/account_activity/all/{env}/subscriptions.json
+ *   2. POST /2/account_activity/webhooks/:id/subscriptions/all  (OAuth 1.0a User Context)
  *      → Subscribes the authenticated user's activity
  *      → From this point, X pushes DMs, mentions, follows, likes in real-time
  *
@@ -24,10 +24,11 @@
  *   - Bot deployed and running on Railway (CRC check happens immediately)
  *   - X App has Account Activity API access (Developer Portal → Products)
  *   - All X_ env vars set: X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET
+ *   - Optional: TWITTER_BEARER_TOKEN (skips appLogin() round-trip for registration)
  *
  * To list or delete existing webhooks:
- *   GET  /1.1/account_activity/all/{env}/webhooks.json
- *   DELETE /1.1/account_activity/all/{env}/webhooks/{webhook_id}.json
+ *   GET    /2/webhooks
+ *   DELETE /2/webhooks/:webhook_id
  */
 
 import "dotenv/config";
@@ -39,8 +40,6 @@ const RAILWAY_URL =
     process.env.RAILWAY_PUBLIC_DOMAIN
         ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
         : null;
-
-const WEBHOOK_ENV = process.env.X_WEBHOOK_ENV ?? "prod";
 
 if (!RAILWAY_URL) {
     console.error(
@@ -55,6 +54,7 @@ const {
     X_CONSUMER_SECRET,
     X_ACCESS_TOKEN,
     X_ACCESS_SECRET,
+    TWITTER_BEARER_TOKEN,
 } = process.env;
 
 if (!X_CONSUMER_KEY || !X_CONSUMER_SECRET || !X_ACCESS_TOKEN || !X_ACCESS_SECRET) {
@@ -66,30 +66,35 @@ const webhookUrl = `${RAILWAY_URL}/x-webhook`;
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
 async function setup(): Promise<void> {
-    const client = new TwitterApi({
+    // OAuth 1.0a user-context client — for identity check + subscription
+    const userClient = new TwitterApi({
         appKey: X_CONSUMER_KEY!,
         appSecret: X_CONSUMER_SECRET!,
         accessToken: X_ACCESS_TOKEN!,
         accessSecret: X_ACCESS_SECRET!,
     });
 
+    // App-only Bearer Token client — required for POST /2/webhooks registration
+    const appClient = TWITTER_BEARER_TOKEN
+        ? new TwitterApi(TWITTER_BEARER_TOKEN)
+        : await userClient.appLogin();
+
     console.log(`\n🔗 Webhook URL : ${webhookUrl}`);
-    console.log(`📦 Environment : ${WEBHOOK_ENV}`);
     console.log(`\n─────────────────────────────────────────`);
 
-    // Step 1: Register webhook
-    console.log("\n[1/2] Registering webhook with X...");
+    // Step 1: Register webhook — POST /2/webhooks (Bearer Token)
+    console.log("\n[1/2] Registering webhook with X (POST /2/webhooks)...");
     console.log("      (X will send a CRC ping to your server — make sure it's online)");
 
     let webhookId: string;
     try {
-        // OAuth 1.0a user-context required for registering
-        const result = await (client.v1 as any).post(
-            `account_activity/all/${WEBHOOK_ENV}/webhooks.json`,
+        const result = await (appClient.v2 as any).post(
+            "webhooks",
             undefined,
             { query: { url: webhookUrl } }
         );
-        webhookId = result.id;
+        webhookId = result?.data?.id ?? result?.id;
+        if (!webhookId) throw new Error("No webhook ID in response: " + JSON.stringify(result));
         console.log(`✅ Webhook registered — ID: ${webhookId}`);
     } catch (err: any) {
         const data = err?.data ?? err?.message ?? err;
@@ -101,12 +106,11 @@ async function setup(): Promise<void> {
         process.exit(1);
     }
 
-    // Step 2: Subscribe user
+    // Step 2: Subscribe user — POST /2/account_activity/webhooks/:id/subscriptions/all (OAuth 1.0a)
     console.log("\n[2/2] Subscribing your X account to the webhook...");
     try {
-        // OAuth 1.0a user-context required for subscribing (subscribes the token owner)
-        await (client.v1 as any).post(
-            `account_activity/all/${WEBHOOK_ENV}/subscriptions.json`
+        await (userClient.v2 as any).post(
+            `account_activity/webhooks/${webhookId}/subscriptions/all`
         );
         console.log("✅ Subscription active!");
     } catch (err: any) {
