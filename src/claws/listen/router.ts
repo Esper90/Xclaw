@@ -260,12 +260,27 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
     bot.command("setup", async (ctx) => {
         ctx.session.setupWizard = { step: "consumer_key", partial: {} };
         await ctx.reply(
-            `🔑 *Connect your X account*\n\n` +
-            `You'll need an X Developer App with Read + Write + Direct Messages permissions.\n` +
-            `Create one at [developer.x.com](https://developer.x.com) → Apps → Keys and Tokens.\n\n` +
-            `*Step 1 of 4 — Consumer Key (API Key)*\n` +
-            `Paste your Consumer Key:`,
-            { parse_mode: "Markdown" }
+            `🔑 *Connect your X account to Xclaw*\n\n` +
+            `We need 4 keys from your X Developer App.\n` +
+            `This takes about 3 minutes — follow each step carefully.\n\n` +
+            `─────────\n` +
+            `*🛠 FIRST — Get your X Developer App ready:*\n\n` +
+            `1️⃣ Go to [developer.x.com](https://developer.x.com)\n` +
+            `2️⃣ Sign in with your X account\n` +
+            `3️⃣ Click *"Dashboard"* in the top navigation\n` +
+            `4️⃣ Under *"Projects & Apps"* in the left sidebar, click your app\n` +
+            `   → If you don't have an app yet, click *"+ Create App"*\n\n` +
+            `⚠️ *Important — check your app permissions first:*\n` +
+            `Go to your app → *"Settings"* tab → scroll to *"App permissions"*\n` +
+            `→ Select *"Read and write and Direct Messages"* → Save\n` +
+            `_(If you just changed this, regenerate your Access Token before continuing)_\n\n` +
+            `─────────\n` +
+            `*Step 1 of 4 — Consumer Key (API Key)*\n\n` +
+            `In your app, click the *"Keys and Tokens"* tab\n` +
+            `Under the *"Consumer Keys"* section you'll see *"API Key"*\n` +
+            `Click *"Regenerate"* if you've never copied it before\n\n` +
+            `👇 Paste your *API Key* (Consumer Key) here:`,
+            { parse_mode: "Markdown", link_preview_options: { is_disabled: true } }
         );
     });
 
@@ -332,8 +347,12 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
     // Basic sanity check — all four X tokens are long with no spaces
     if (!trimmed || trimmed.length < 10 || trimmed.includes(" ")) {
         await ctx.reply(
-            "⚠️ That doesn't look right — X tokens have no spaces and are at least 10 characters.\n" +
-            "Please paste the key exactly as shown in the developer portal."
+            `⚠️ *That doesn't look like a valid key.*\n\n` +
+            `X keys and tokens:\n` +
+            `• Have no spaces\n` +
+            `• Are at least 10 characters long\n` +
+            `• Should be copied exactly as shown in the developer portal\n\n` +
+            `Please try again, or type /cancel to stop setup.`
         );
         return;
     }
@@ -343,7 +362,15 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
             wizard.partial.consumer_key = trimmed;
             wizard.step = "consumer_secret";
             await ctx.reply(
-                `✅ Consumer Key saved.\n\n*Step 2 of 4 — Consumer Secret (API Key Secret)*\nPaste your Consumer Secret:`,
+                `✅ *API Key saved!*\n\n` +
+                `─────────\n` +
+                `*Step 2 of 4 — Consumer Secret (API Key Secret)*\n\n` +
+                `Stay on the *"Keys and Tokens"* tab — don't close it.\n\n` +
+                `Right below the API Key you just copied, you'll see\n` +
+                `*"API Key Secret"* — that is the Consumer Secret.\n\n` +
+                `💡 It's a longer random string (~50 characters).\n` +
+                `If it's hidden, click *"Regenerate"* to reveal it.\n\n` +
+                `👇 Paste your *API Key Secret* (Consumer Secret) here:`,
                 { parse_mode: "Markdown" }
             );
             break;
@@ -352,7 +379,19 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
             wizard.partial.consumer_secret = trimmed;
             wizard.step = "access_token";
             await ctx.reply(
-                `✅ Consumer Secret saved.\n\n*Step 3 of 4 — Access Token*\nPaste your Access Token:`,
+                `✅ *Consumer Secret saved!*\n\n` +
+                `─────────\n` +
+                `*Step 3 of 4 — Access Token*\n\n` +
+                `Still on the *"Keys and Tokens"* tab — scroll down a bit.\n\n` +
+                `You'll see a section called *"Authentication Tokens"*.\n` +
+                `Under it, look for *"Access Token and Secret"*.\n\n` +
+                `• If you see a token already — copy it\n` +
+                `• If it shows *"Generate"* — click it first, then copy\n\n` +
+                `⚠️ *X only shows the token ONCE when generated.*\n` +
+                `If you missed it, click *"Regenerate"* to get a new one.\n\n` +
+                `The Access Token looks like: \`1234567890-ABCdefGHIjkl...\`\n` +
+                `(starts with numbers, has a dash, then letters)\n\n` +
+                `👇 Paste your *Access Token* here:`,
                 { parse_mode: "Markdown" }
             );
             break;
@@ -361,7 +400,18 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
             wizard.partial.access_token = trimmed;
             wizard.step = "access_secret";
             await ctx.reply(
-                `✅ Access Token saved.\n\n*Step 4 of 4 — Access Token Secret*\nPaste your Access Token Secret:`,
+                `✅ *Access Token saved!*\n\n` +
+                `─────────\n` +
+                `*Step 4 of 4 — Access Token Secret*\n\n` +
+                `Almost done! The Access Token Secret was shown *directly below*\n` +
+                `the Access Token when you generated it.\n\n` +
+                `• If you copied it at the time — paste it now\n` +
+                `• If you didn't copy it — click *"Regenerate"* next to\n` +
+                `  "Access Token and Secret" to get a fresh pair,\n` +
+                `  then copy the Secret (the second value shown)\n\n` +
+                `💡 The Access Token Secret is a long random string (~45 chars)\n` +
+                `with no dash — different from the Access Token.\n\n` +
+                `👇 Paste your *Access Token Secret* here:`,
                 { parse_mode: "Markdown" }
             );
             break;
