@@ -430,20 +430,21 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                     access_token: wizard.partial.access_token!.length,
                     access_secret: trimmed.length,
                 });
-                // Verify credentials live — v2.me() returns 401 if anything is wrong
+                // Verify credentials live using v1.1 verifyCredentials — the most reliable
+                // OAuth 1.0a test endpoint; returns user object on success, throws on failure.
                 const testClient = new TwitterApi({
                     appKey: wizard.partial.consumer_key!,
                     appSecret: wizard.partial.consumer_secret!,
                     accessToken: wizard.partial.access_token!,
                     accessSecret: trimmed,
                 });
-                const { data: xMe } = await testClient.v2.me({ "user.fields": ["id", "username"] });
+                const xMe = await testClient.v1.verifyCredentials();
 
                 // Persist to Supabase
                 await upsertUser({
                     telegram_id: telegramId,
-                    x_user_id: xMe.id,
-                    x_username: xMe.username,
+                    x_user_id: String(xMe.id_str ?? xMe.id),
+                    x_username: xMe.screen_name,
                     x_consumer_key: wizard.partial.consumer_key!,
                     x_consumer_secret: wizard.partial.consumer_secret!,
                     x_access_token: wizard.partial.access_token!,
@@ -472,89 +473,32 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                 await ctx.api.editMessageText(
                     ctx.chat?.id ?? telegramId,
                     validating.message_id,
-                    `✅ *Connected as @${xMe.username}!*\n\n` +
+                    `✅ *Connected as @${xMe.screen_name}!*\n\n` +
                     `Your credentials are stored securely in the database.` +
                     webhookNote +
                     `\n\n_Use /deletekeys to disconnect at any time._`,
                     { parse_mode: "Markdown" }
                 );
             } catch (err: any) {
-                // ── Log full raw error for diagnosis ──────────────────────
-                console.error("[setup:validate] RAW ERROR:", JSON.stringify({
-                    message: err?.message,
-                    code: err?.code,
-                    status: err?.data?.status ?? err?.status,
-                    xErrors: err?.data?.errors ?? err?.errors,
-                    detail: err?.data?.detail,
-                    type: err?.data?.type,
-                }, null, 2));
+                // Dump complete error shape — include all own properties
+                const rawDump = JSON.stringify(err, Object.getOwnPropertyNames(err), 2);
+                console.error("[setup:validate] RAW ERROR:", rawDump);
 
-                const xCode: number | undefined =
-                    err?.data?.errors?.[0]?.code ??
-                    err?.errors?.[0]?.code ??
-                    undefined;
-                const xMessage: string =
-                    err?.data?.errors?.[0]?.message ??
-                    err?.data?.detail ??
-                    err?.message ??
-                    "unknown error";
-                const httpStatus: number | undefined =
-                    err?.data?.status ?? err?.status ?? err?.code;
-                const msg: string = (err?.message ?? "").toLowerCase();
-
-                const isConsumerBad =
-                    xCode === 32 ||
-                    msg.includes("consumer") ||
-                    msg.includes("invalid api key") ||
-                    msg.includes("api key");
-
-                const isAccessBad =
-                    xCode === 89 ||
-                    xCode === 326 ||
-                    msg.includes("token") ||
-                    msg.includes("access");
-
-                if (isConsumerBad && !isAccessBad) {
-                    wizard.step = "consumer_key";
-                    wizard.partial = {};
-                    wizard.retryMode = true;
-                    await ctx.api.editMessageText(
-                        ctx.chat?.id ?? telegramId,
-                        validating.message_id,
-                        `❌ *Authentication failed*\n\n` +
-                        `🔍 *Raw X error:* HTTP ${httpStatus ?? "?"} | code ${xCode ?? "?"} | \`${xMessage}\`\n\n` +
-                        `We need to see this to diagnose the issue. Screenshot this message and share it.\n\n` +
-                        `Then re-enter all 4 keys — start with your *Consumer Key*:`,
-                        { parse_mode: "Markdown" }
-                    );
-                } else if (isAccessBad && !isConsumerBad) {
-                    wizard.step = "access_token";
-                    wizard.partial.access_token = undefined;
-                    wizard.partial.access_secret = undefined;
-                    wizard.retryMode = true;
-                    await ctx.api.editMessageText(
-                        ctx.chat?.id ?? telegramId,
-                        validating.message_id,
-                        `❌ *Authentication failed*\n\n` +
-                        `🔍 *Raw X error:* HTTP ${httpStatus ?? "?"} | code ${xCode ?? "?"} | \`${xMessage}\`\n\n` +
-                        `We need to see this to diagnose the issue. Screenshot this message and share it.\n\n` +
-                        `Then re-enter your *Access Token* (keeps your Consumer Key):`,
-                        { parse_mode: "Markdown" }
-                    );
-                } else {
-                    wizard.step = "consumer_key";
-                    wizard.partial = {};
-                    wizard.retryMode = true;
-                    await ctx.api.editMessageText(
-                        ctx.chat?.id ?? telegramId,
-                        validating.message_id,
-                        `❌ *Authentication failed*\n\n` +
-                        `🔍 *Raw X error:* HTTP ${httpStatus ?? "?"} | code ${xCode ?? "?"} | \`${xMessage}\`\n\n` +
-                        `We need to see this to diagnose the issue. Screenshot this message and share it.\n\n` +
-                        `Then re-enter all 4 keys — start with your *Consumer Key*:`,
-                        { parse_mode: "Markdown" }
-                    );
-                }
+                // Show truncated raw error directly in Telegram for diagnosis
+                const snippet = rawDump.length > 600 ? rawDump.slice(0, 600) + "…" : rawDump;
+                wizard.step = "consumer_key";
+                wizard.partial = {};
+                wizard.retryMode = true;
+                await ctx.api.editMessageText(
+                    ctx.chat?.id ?? telegramId,
+                    validating.message_id,
+                    `❌ *Validation failed*\n\n` +
+                    `\`\`\`\n${snippet}\n\`\`\`\n\n` +
+                    `Please screenshot this and share it so we can diagnose.\n\n` +
+                    `Then re-enter all 4 keys — start with your *Consumer Key*:`,
+                    { parse_mode: "Markdown" }
+                );
+                break;
             }
             break;
         }
