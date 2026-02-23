@@ -1,8 +1,9 @@
 import type { BotContext } from "../connect/bot";
 import { handleText } from "./textHandler";
 import { handleVoice } from "./voiceHandler";
+import { handlePhoto } from "./photoHandler";
 import { registerHeartbeat, unregisterHeartbeat } from "../sense/heartbeat";
-import { queryMemory } from "../archive/pinecone";
+import { queryMemory, forgetMemory } from "../archive/pinecone";
 import { postTweet } from "../wire/xService";
 import { fetchMentions, fetchDMs } from "../wire/xButler";
 import { TwitterApi } from "twitter-api-v2";
@@ -10,6 +11,9 @@ import { upsertUser, deleteUser } from "../../db/userStore";
 import { invalidateUserXClient } from "../../db/getUserClient";
 import { registerAndSubscribeWebhook } from "../../x/webhookManager";
 import { config } from "../../config";
+import { synthesizeToFile } from "../sense/tts";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { InputFile } from "grammy";
 
 const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
 
@@ -28,10 +32,15 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `/deletekeys — Remove your X credentials\n` +
             `/mentions — Check important X mentions\n` +
             `/dms — Check recent X DMs\n` +
+            `/briefing — Get an audio summary of your X inbox\n` +
             `/post <text> — Post a tweet to X\n` +
             `/memory <query> — Search your memories\n` +
+            `/forget <query> — Delete specific memories\n` +
+            `/braindump on|off — Toggle spoken journal mode\n` +
+            `/thread — Start building an X thread\n` +
             `/voice on|off — Toggle voice replies\n` +
             `/heartbeat on|off — Toggle proactive check-ins\n` +
+            `/silence <dur> — Pause proactive messages\n` +
             `/help — Show this message`,
             { parse_mode: "Markdown" }
         );
@@ -49,7 +58,8 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `*/voice on* — I reply back with audio\n` +
             `*/voice off* — Text-only replies (default)\n\n` +
             `*Memory:* I remember our conversations via semantic search.\n` +
-            `*/memory <query>* — Search your long-term memories\n\n` +
+            `*/memory <query>* — Search your long-term memories\n` +
+            `*/forget <query>* — Describe a memory for me to delete\n\n` +
             `*Heartbeat:* Proactive check-ins from me.\n` +
             `*/heartbeat on* — Enable check-ins\n` +
             `*/heartbeat off* — Disable check-ins`,
@@ -73,6 +83,16 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
                 );
                 return;
             }
+
+            // Store in session with labels so user can reply naturally backwards
+            ctx.session.pendingMentions = mentions.map((m, i) => ({
+                label: DM_LABELS[i] ?? String(i + 1),
+                id: m.id,
+                authorId: m.authorId,
+                authorUsername: m.authorUsername,
+                text: m.text,
+                suggestedReply: m.suggestedReply,
+            }));
 
             let message = `📣 *${mentions.length} important mention${mentions.length > 1 ? "s" : ""}:*\n\n`;
 
@@ -160,6 +180,187 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
         }
     });
 
+    bot.command("briefing", async (ctx) => {
+        const userId = String(ctx.from!.id);
+        const waitMsg = await ctx.reply("🎙️ Preparing your Audio Briefing...");
+
+        try {
+            const [mentions, dms] = await Promise.all([
+                fetchMentions(userId, 5),
+                fetchDMs(userId, 5)
+            ]);
+
+            if (mentions.length === 0 && dms.length === 0) {
+                await ctx.api.editMessageText(
+                    ctx.chat.id,
+                    waitMsg.message_id,
+                    "📭 Your inbox is completely clear. No briefing needed!"
+                );
+                return;
+            }
+
+            await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, "🎙️ Writing script...");
+
+            const mentionLines = mentions.map(m => `Mention from @${m.authorUsername || m.authorId}: "${m.text}"`);
+            const dmLines = dms.map(d => `DM from @${d.senderUsername || d.senderId}: "${d.text}"`);
+
+            const ai = new GoogleGenerativeAI(config.GEMINI_API_KEY);
+            const model = ai.getGenerativeModel({ model: config.GEMINI_MODEL });
+
+            const prompt = `You are a highly efficient, professional yet conversational personal assistant. 
+Write a script for a quick daily audio briefing synthesizing the user's latest X (Twitter) notifications.
+Keep it under 45 seconds when spoken (approx 100-120 words). 
+Be conversational, write it exactly as it should be spoken (no emojis, no hashtags, spell out symbols if needed).
+Start directly with the briefing.
+
+DATA TO SUMMARIZE:
+Mentions:
+${mentionLines.join("\n") || "No new mentions."}
+
+DMs:
+${dmLines.join("\n") || "No new DMs."}`;
+
+            const result = await model.generateContent(prompt);
+            const script = result.response.text().trim();
+
+            await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, "🎙️ Recording audio...");
+
+            const ttsFile = await synthesizeToFile(script);
+
+            await ctx.replyWithVoice(new InputFile(ttsFile), {
+                caption: `🎙️ *Your Audio Briefing*\n\n_${script}_`,
+                parse_mode: "Markdown"
+            });
+
+            // Cleanup
+            await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id);
+            const fs = await import("fs");
+            fs.unlinkSync(ttsFile);
+
+        } catch (err: any) {
+            console.error("[router] /briefing failed:", err);
+            await ctx.api.editMessageText(
+                ctx.chat.id,
+                waitMsg.message_id,
+                "❌ Failed to generate the Audio Briefing."
+            );
+        }
+    });
+
+    bot.command("thread", async (ctx) => {
+        ctx.session.threadMode = true;
+        ctx.session.threadBuffer = [];
+        await ctx.reply("🧵 *Voice-to-Thread Builder: ACTIVE*\n\nSend me ideas via text or voice. I will accumulate them. When you're done, type `/finish` and I will format them into a cohesive X thread and post it seamlessly.\n\n_(To cancel, type `/cancelthread`)_", { parse_mode: "Markdown" });
+    });
+
+    bot.command("cancelthread", async (ctx) => {
+        if (!ctx.session.threadMode) {
+            await ctx.reply("You are not currently building a thread.");
+            return;
+        }
+        ctx.session.threadMode = false;
+        ctx.session.threadBuffer = [];
+        await ctx.reply("🧵 Thread builder cancelled.");
+    });
+
+    bot.command("finish", async (ctx) => {
+        if (!ctx.session.threadMode) {
+            await ctx.reply("⚠️ You are not currently building a thread. Use `/thread` to start one.", { parse_mode: "Markdown" });
+            return;
+        }
+
+        const buffer = ctx.session.threadBuffer;
+        if (buffer.length === 0) {
+            ctx.session.threadMode = false;
+            await ctx.reply("🧵 Thread builder cancelled (no drafts were added).", { parse_mode: "Markdown" });
+            return;
+        }
+
+        const waitMsg = await ctx.reply("✍️ Compiling your thread...");
+
+        try {
+            const ai = new GoogleGenerativeAI(config.GEMINI_API_KEY);
+            const model = ai.getGenerativeModel({ model: config.GEMINI_MODEL });
+
+            const prompt = `You are a professional social media manager. The user has provided a stream-of-consciousness draft (dictated via voice or text) for a Twitter/X thread.
+Compile these notes into a cohesive, highly engaging X thread.
+Rules:
+1. Each tweet in the thread MUST be no more than 280 characters.
+2. Ensure clear transitions between tweets.
+3. Use a natural, conversational tone that matches the user's draft.
+4. Output ONLY a valid JSON array of strings, where each string is a single tweet in the sequence. 
+5. Do not use blockquotes or markdown in the JSON wrapper. Just raw JSON.
+
+DRAFT NOTES:
+${buffer.join("\n")}`;
+
+            const result = await model.generateContent(prompt);
+            const raw = result.response.text().trim().replace(/^```json\n?|```$/g, "").trim();
+            const tweets: string[] = JSON.parse(raw);
+
+            if (!Array.isArray(tweets) || tweets.length === 0) {
+                throw new Error("AI returned invalid thread payload.");
+            }
+
+            await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, `🐦 Posting a thread of ${tweets.length} tweets to X...`);
+
+            const userId = String(ctx.from!.id);
+            let previousTweetId: string | undefined;
+            let postedCount = 0;
+
+            for (let i = 0; i < tweets.length; i++) {
+                const tweetText = tweets[i];
+                previousTweetId = await postTweet(tweetText, userId, previousTweetId);
+                postedCount++;
+
+                // Track this published tweet into the user's RAG for the Viral Style Engine
+                if (previousTweetId) {
+                    await upsertMemory(userId, tweetText, {
+                        source: "my_tweet",
+                        tweetId: previousTweetId,
+                        createdAt: new Date().toISOString(),
+                        engagement: "0"
+                    }, `${userId}-my_tweet-${previousTweetId}`);
+                }
+
+                // Delay slightly to be polite to the API
+                await new Promise(r => setTimeout(r, 1000));
+            }
+
+            // Cleanup
+            ctx.session.threadMode = false;
+            ctx.session.threadBuffer = [];
+
+            await ctx.api.editMessageText(
+                ctx.chat.id,
+                waitMsg.message_id,
+                `✅ *Thread posted successfully!*\n\nhttps://x.com/i/status/${previousTweetId}`,
+                { parse_mode: "Markdown" }
+            );
+
+        } catch (err: any) {
+            console.error("[router] /finish failed:", err);
+
+            if (postedCount > 0) {
+                ctx.session.threadMode = false;
+                ctx.session.threadBuffer = [];
+                await ctx.api.editMessageText(
+                    ctx.chat.id,
+                    waitMsg.message_id,
+                    `❌ *Failed to post thread at tweet #${postedCount + 1}:*\n${err.message}\n\n_Tweets 1 to ${postedCount} were successfully published. The remaining drafts have been cleared from memory to prevent duplicates. Please check X and post the rest manually._`,
+                    { parse_mode: "Markdown" }
+                );
+            } else {
+                await ctx.api.editMessageText(
+                    ctx.chat.id,
+                    waitMsg.message_id,
+                    `❌ *Failed to compile thread:*\n${err.message}\n\n_Don't worry, your drafted notes are still saved in memory. You can continue sending notes, or type \`/finish\` to try compiling again._`,
+                    { parse_mode: "Markdown" }
+                );
+            }
+        }
+    });
+
     bot.command("post", async (ctx) => {
         const text = ctx.match?.trim();
         if (!text) {
@@ -171,6 +372,17 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
 
         try {
             const tweetId = await postTweet(text, userId);
+
+            // Track this published tweet into the user's RAG for the Viral Style Engine
+            if (tweetId) {
+                await upsertMemory(userId, text, {
+                    source: "my_tweet",
+                    tweetId: tweetId,
+                    createdAt: new Date().toISOString(),
+                    engagement: "0"
+                }, `${userId}-my_tweet-${tweetId}`);
+            }
+
             await ctx.api.editMessageText(
                 ctx.chat.id,
                 waitMsg.message_id,
@@ -257,6 +469,84 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
         }
     });
 
+    bot.command("braindump", async (ctx) => {
+        const arg = ctx.match?.trim().toLowerCase();
+        if (arg === "on") {
+            ctx.session.braindumpMode = true;
+            await ctx.reply("🧠 *Brain Dump Mode: ON*\n\nSend voice notes. I will transcribe them and save them to your long-term memory, but I will *not* reply or try to converse.\n(Use `/braindump off` to return to normal)", { parse_mode: "Markdown" });
+        } else if (arg === "off") {
+            ctx.session.braindumpMode = false;
+            await ctx.reply("🧠 Brain Dump Mode: OFF. Normal conversational AI resumed.");
+        } else {
+            const status = ctx.session.braindumpMode ? "on" : "off";
+            await ctx.reply(`Brain Dump is currently *${status}*. Use \`/braindump on\` or \`/braindump off\`.\n\n_When ON, your voice notes are silently transcribed and memorized without me replying._`, { parse_mode: "Markdown" });
+        }
+    });
+
+    bot.command("silence", async (ctx) => {
+        const arg = ctx.match?.trim().toLowerCase();
+        if (!arg) {
+            if (ctx.session.silencedUntil > Date.now()) {
+                const remainingRaw = Math.round((ctx.session.silencedUntil - Date.now()) / 60000);
+                const remainingStr = remainingRaw > 60
+                    ? `${(remainingRaw / 60).toFixed(1)} hours`
+                    : `${remainingRaw} minutes`;
+                await ctx.reply(`🤫 Silence mode is *active* for another ${remainingStr}.\nUse \`/silence off\` to resume notifications.`, { parse_mode: "Markdown" });
+            } else {
+                await ctx.reply("Usage: `/silence <duration>` (e.g. `2h`, `30m`) or `/silence off`", { parse_mode: "Markdown" });
+            }
+            return;
+        }
+
+        if (arg === "off" || arg === "stop") {
+            ctx.session.silencedUntil = 0;
+            await ctx.reply("🔔 Silence lifted. Normal checks resumed.");
+            return;
+        }
+
+        const match = arg.match(/^(\d+)(h|m)$/);
+        if (!match) {
+            await ctx.reply("Invalid format. Use `h` for hours or `m` for minutes (e.g., `2h`, `45m`).", { parse_mode: "Markdown" });
+            return;
+        }
+
+        const value = parseInt(match[1], 10);
+        const unit = match[2];
+        const ms = unit === "h" ? value * 60 * 60 * 1000 : value * 60 * 1000;
+
+        ctx.session.silencedUntil = Date.now() + ms;
+        await ctx.reply(`🤫 *Emergency Brake Pulled*\n\nQuiet mode engaged for ${value}${unit}. I won't send you any proactive messages or DMs until then.`, { parse_mode: "Markdown" });
+    });
+
+    bot.command("forget", async (ctx) => {
+        const query = ctx.match?.trim();
+        if (!query) {
+            await ctx.reply("Usage: /forget <description of memory to delete>\nExample: /forget the conversation about Xclaw");
+            return;
+        }
+
+        const userId = String(ctx.from!.id);
+        const waitMsg = await ctx.reply("🗑️ Finding memory to delete...");
+
+        try {
+            const result = await forgetMemory(userId, query);
+            await ctx.api.editMessageText(
+                ctx.chat.id,
+                waitMsg.message_id,
+                result,
+                { parse_mode: "Markdown" }
+            );
+        } catch (err: any) {
+            console.error("[router] /forget failed:", err);
+            await ctx.api.editMessageText(
+                ctx.chat.id,
+                waitMsg.message_id,
+                "❌ Failed to delete memory. Please try again.",
+                { parse_mode: "Markdown" }
+            );
+        }
+    });
+
     // ── /setup — X credential onboarding wizard ──────────────────────────────
     bot.command("setup", async (ctx) => {
         ctx.session.setupWizard = { step: "consumer_key", partial: {} };
@@ -307,6 +597,9 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
     // ── Voice / Audio messages ─────────────────────────────────────────────────
     bot.on("message:voice", handleVoice);
     bot.on("message:audio", handleVoice);
+
+    // ── Photos / Image messages ────────────────────────────────────────────────
+    bot.on("message:photo", handlePhoto);
 
     // ── Text messages ─────────────────────────────────────────────────────────
     bot.on("message:text", async (ctx) => {

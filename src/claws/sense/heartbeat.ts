@@ -50,7 +50,8 @@ Current time: ${new Date().toUTCString()}`,
  * @param sendMessage - Function to send a Telegram message to a chatId
  */
 export function startHeartbeat(
-    sendMessage: (chatId: number, text: string) => Promise<void>
+    sendMessage: (chatId: number, text: string) => Promise<void>,
+    isSilenced: (userId: string) => Promise<boolean>
 ): void {
     const schedule = config.HEARTBEAT_CRON;
 
@@ -64,6 +65,10 @@ export function startHeartbeat(
 
         for (const [userId, chatId] of heartbeatRegistry.entries()) {
             try {
+                if (await isSilenced(userId)) {
+                    console.log(`[heartbeat] Skipped (silenced) for userId=${userId}`);
+                    continue;
+                }
                 const message = await generateHeartbeatMessage(userId);
                 await sendMessage(chatId, `💡 *Xclaw check-in:*\n\n${message}`);
                 console.log(`[heartbeat] Sent to userId=${userId}`);

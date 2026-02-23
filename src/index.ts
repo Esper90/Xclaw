@@ -7,8 +7,12 @@
 import "./claws/wire/tools/email";
 import "./claws/wire/tools/calendar";
 import "./claws/wire/tools/x";
+import "./claws/wire/tools/search_memory";
+import "./claws/wire/tools/x_inbox";
+import "./claws/wire/tools/x_reply";
+import "./claws/wire/tools/web_search";
 
-import { bot } from "./claws/connect/bot";
+import { bot, sessionMap } from "./claws/connect/bot";
 import { authMiddleware } from "./claws/connect/auth";
 import { registerRoutes } from "./claws/listen/router";
 import { startHeartbeat } from "./claws/sense/heartbeat";
@@ -44,14 +48,34 @@ async function main(): Promise<void> {
     // ── 5. Start REST API server ─────────────────────────────────────────────
     startApiServer();
 
+    // Helper to peek into a user's session without sending a message
+    // We read directly from the in-memory map exported by bot.ts.
+    // grammY session keys for private chats are typically just the chat ID as a string.
+    const isSilenced = async (userId: string) => {
+        const raw = sessionMap.get(userId);
+        if (!raw) return false;
+        try {
+            const data = JSON.parse(raw);
+            return data.silencedUntil && data.silencedUntil > Date.now();
+        } catch {
+            return false;
+        }
+    };
+
     // ── 6. Start heartbeat scheduler ─────────────────────────────────────────
-    startHeartbeat(async (chatId, text) => {
-        await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
-    });
+    startHeartbeat(
+        async (chatId, text) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+        },
+        isSilenced
+    );
     // ── 6b. Start butler background watcher (15-min X check for active users) ──
-    startButlerWatcher(async (chatId, text) => {
-        await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
-    });
+    startButlerWatcher(
+        async (chatId, text) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+        },
+        isSilenced
+    );
     // ── 7. Launch bot (long-polling) ─────────────────────────────────────────
     // Graceful shutdown: tell Telegram to stop polling BEFORE the process exits.
     // Without this, Railway kills the old container mid-poll and the new instance
@@ -62,7 +86,7 @@ async function main(): Promise<void> {
         process.exit(0);
     };
     process.once("SIGTERM", () => shutdown("SIGTERM"));
-    process.once("SIGINT",  () => shutdown("SIGINT"));
+    process.once("SIGINT", () => shutdown("SIGINT"));
 
     // Prevent 409 Conflict crash loop on Railway redeploys:
     // Telegram's long-polling session isn't released instantly when the old container

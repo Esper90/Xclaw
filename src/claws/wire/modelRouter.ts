@@ -12,11 +12,13 @@ export async function routeToModel(
     systemPrompt: string,
     history: Content[],
     userMessage: string,
-    tools?: FunctionDeclarationsTool[]
+    tools?: FunctionDeclarationsTool[],
+    dispatchTool?: (name: string, args: Record<string, unknown>, context?: Record<string, unknown>) => Promise<string>,
+    context?: Record<string, unknown>
 ): Promise<GeminiReply> {
     switch (config.AI_PROVIDER) {
         case "gemini":
-            return generateReply(systemPrompt, history, userMessage, tools);
+            return generateReply(systemPrompt, history, userMessage, tools, dispatchTool, context);
         default:
             throw new Error(`Unknown AI_PROVIDER: ${config.AI_PROVIDER}`);
     }

@@ -60,6 +60,14 @@ export interface SessionData {
     voiceEnabled: boolean;
     /** Whether to receive proactive heartbeat messages */
     heartbeatEnabled: boolean;
+    /** Whether voice inputs should be transcribed and saved without an AI reply */
+    braindumpMode: boolean;
+    /** Timestamp until which proactive messages are paused (0 if not silenced) */
+    silencedUntil: number;
+    /** Whether the user is actively building a thread */
+    threadMode: boolean;
+    /** The accumulated messages for the current thread */
+    threadBuffer: string[];
     /** DMs fetched in the last /dms or natural language check — cleared after replying */
     pendingDMs: PendingDM[];
     /** Mentions fetched in the last /mentions or natural language check — cleared after replying */

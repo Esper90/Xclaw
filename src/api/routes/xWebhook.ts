@@ -20,6 +20,7 @@ import { Router, type Request, type Response } from "express";
 import { config } from "../../config";
 import { lookupKnownSender, resolveXUserId } from "../../claws/wire/xButler";
 import { getUser, getUserByXUserId, isSupabaseConfigured } from "../../db/userStore";
+import { upsertMemory } from "../../claws/archive/pinecone";
 
 // ── Injected Telegram sender ──────────────────────────────────────────────────
 let _sendMessage: ((chatId: number, text: string) => Promise<void>) | null = null;
@@ -110,7 +111,7 @@ function parseAllowlist(raw: string | undefined): Set<string> | null {
 }
 
 const mentionAllowlist = parseAllowlist(config.MENTION_ALLOWLIST);
-const dmAllowlist      = parseAllowlist(config.DM_ALLOWLIST);
+const dmAllowlist = parseAllowlist(config.DM_ALLOWLIST);
 
 if (mentionAllowlist) {
     console.log(`[x-webhook] 🔒 Mention allowlist active — ${mentionAllowlist.size} handle(s): ${[...mentionAllowlist].join(", ")}`);
@@ -223,6 +224,15 @@ xWebhookRouter.post("/", async (req: Request, res: Response) => {
 
         try {
             await _sendMessage(chatId, formatDMAlert(username, text));
+
+            await upsertMemory(String(chatId), text, {
+                source: "butler_dm",
+                dmId: evt.message_create.id ?? evt.id ?? Date.now().toString(),
+                senderId: sender_id,
+                senderUsername: username,
+                createdAt: evt.created_timestamp ?? new Date().toISOString()
+            }, `${chatId}-dm-${evt.message_create.id ?? evt.id}`);
+
         } catch (err) {
             console.error("[x-webhook] Failed to forward DM to Telegram:", err);
         }
@@ -250,6 +260,15 @@ xWebhookRouter.post("/", async (req: Request, res: Response) => {
 
         try {
             await _sendMessage(chatId, formatMentionAlert(username, text, tweet.id_str));
+
+            await upsertMemory(String(chatId), text, {
+                source: "butler_mention",
+                tweetId: tweet.id_str,
+                authorId: tweet.user?.id_str ?? "",
+                authorUsername: username ?? "",
+                createdAt: new Date().toISOString()
+            }, `${chatId}-mention-${tweet.id_str}`);
+
         } catch (err) {
             console.error("[x-webhook] Failed to forward mention to Telegram:", err);
         }
@@ -368,6 +387,15 @@ xWebhookRouter.post("/:telegramId", async (req: Request, res: Response) => {
         console.log(`[x-webhook/${telegramId}] 📩 DM from @${username}: "${text.slice(0, 80)}"`);
         try {
             await _sendMessage(telegramId, formatDMAlert(username, text));
+
+            await upsertMemory(String(telegramId), text, {
+                source: "butler_dm",
+                dmId: evt.message_create.id ?? evt.id ?? Date.now().toString(),
+                senderId: sender_id,
+                senderUsername: username,
+                createdAt: evt.created_timestamp ?? new Date().toISOString()
+            }, `${telegramId}-dm-${evt.message_create.id ?? evt.id}`);
+
         } catch (err) {
             console.error(`[x-webhook/${telegramId}] Failed to forward DM:`, err);
         }
@@ -389,6 +417,15 @@ xWebhookRouter.post("/:telegramId", async (req: Request, res: Response) => {
         console.log(`[x-webhook/${telegramId}] 🔔 Mention from @${username}: "${text.slice(0, 80)}"`);
         try {
             await _sendMessage(telegramId, formatMentionAlert(username, text, tweet.id_str));
+
+            await upsertMemory(String(telegramId), text, {
+                source: "butler_mention",
+                tweetId: tweet.id_str,
+                authorId: tweet.user?.id_str ?? "",
+                authorUsername: username ?? "",
+                createdAt: new Date().toISOString()
+            }, `${telegramId}-mention-${tweet.id_str}`);
+
         } catch (err) {
             console.error(`[x-webhook/${telegramId}] Failed to forward mention:`, err);
         }

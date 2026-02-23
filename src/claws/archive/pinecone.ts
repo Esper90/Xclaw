@@ -89,3 +89,49 @@ export async function deleteMemory(
         await ns.deleteAll();
     }
 }
+
+/**
+ * Natural language memory deletion.
+ * Queries Pinecone for relevant memories, uses Gemini to pick the best match,
+ * and deletes it.
+ */
+export async function forgetMemory(userId: string, query: string): Promise<string> {
+    const ai = new GoogleGenerativeAI(config.GEMINI_API_KEY);
+    const model = ai.getGenerativeModel({ model: config.GEMINI_MODEL });
+
+    // Grab top 10 possible matches to give Gemini context
+    const candidates = await queryMemory(userId, query, 10);
+
+    if (candidates.length === 0) {
+        return "📭 I couldn't find any memories matching that description to delete.";
+    }
+
+    const summaries = candidates.map((m, i) =>
+        `[${i}] ID: ${m.id} | Score: ${(m.score * 100).toFixed(0)}% | Text: "${m.text}"`
+    ).join("\n");
+
+    const result = await model.generateContent(
+        `The user wants to FORGET or DELETE a specific memory matching this description: "${query.replace(/"/g, "'")}"
+        
+Here are the top 10 closest memories I found:
+${summaries}
+
+Which ONE memory is the user most likely referring to? 
+Reply with ONLY the exact string ID of the memory to delete. 
+If none of these seem like a good match for the user's request, reply with the exact word "NONE".`
+    );
+
+    const answer = result.response.text().trim();
+
+    if (answer === "NONE" || !answer) {
+        return "🤷‍♂️ I found some somewhat related memories, but none seemed exactly like what you asked to delete. Try being more specific.";
+    }
+
+    const match = candidates.find(c => c.id === answer);
+    if (!match) {
+        return "❌ Found a match, but failed to delete it from the database. Try again.";
+    }
+
+    await deleteMemory(userId, [match.id]);
+    return `✅ *Memory deleted:*\n_"${match.text}"_`;
+}

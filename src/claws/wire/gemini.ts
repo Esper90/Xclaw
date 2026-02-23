@@ -5,18 +5,23 @@ const genAI = new GoogleGenerativeAI(config.GEMINI_API_KEY);
 
 export interface GeminiReply {
     text: string;
-    toolCalls?: Array<{ name: string; args: Record<string, unknown> }>;
 }
 
 /**
  * Generate a reply from Gemini given a system prompt, conversation history,
  * user message, and optional tool definitions.
+ * 
+ * Supports a "while" loop for up to `maxToolTurns` (default 5) so Xclaw 
+ * can natively chain multiple tool actions (e.g., fetch DMs -> read -> reply).
  */
 export async function generateReply(
     systemPrompt: string,
     history: Content[],
     userMessage: string,
-    tools?: FunctionDeclarationsTool[]
+    tools?: FunctionDeclarationsTool[],
+    dispatchTool?: (name: string, args: Record<string, unknown>, context?: Record<string, unknown>) => Promise<string>,
+    context?: Record<string, unknown>,
+    maxToolTurns: number = 5
 ): Promise<GeminiReply> {
     const model = genAI.getGenerativeModel({
         model: config.GEMINI_MODEL,
@@ -28,20 +33,43 @@ export async function generateReply(
         ...(tools && tools.length > 0 ? { tools } : {}),
     });
 
-    const result = await chat.sendMessage(userMessage);
-    const response = result.response;
+    let currentResponse = await chat.sendMessage(userMessage);
+    let turns = 0;
 
-    // Check for function calls
-    const functionCalls = response.functionCalls();
-    if (functionCalls && functionCalls.length > 0) {
-        return {
-            text: response.text() || "",
-            toolCalls: functionCalls.map((fc) => ({
-                name: fc.name,
-                args: fc.args as Record<string, unknown>,
-            })),
-        };
+    while (turns < maxToolTurns) {
+        turns++;
+        const functionCalls = currentResponse.response.functionCalls();
+        const textPart = currentResponse.response.text();
+
+        // If no tool calls, we're done
+        if (!functionCalls || functionCalls.length === 0) {
+            return { text: textPart || "" };
+        }
+
+        // If we have tool calls but no dispatcher was provided (legacy route), just return text
+        if (!dispatchTool) {
+            console.warn(`[gemini] Model requested ${functionCalls.length} tools but no dispatcher provided.`);
+            return { text: textPart || "(Error: Tool calls requested but not supported in this context)" };
+        }
+
+        // Execute all requested tools in parallel for this turn
+        const functionResponses = await Promise.all(
+            functionCalls.map(async (fc) => {
+                const resultStr = await dispatchTool(fc.name, fc.args as Record<string, unknown>, context);
+                return {
+                    functionResponse: {
+                        name: fc.name,
+                        // We must wrap the result in an object for Gemini
+                        response: { result: resultStr },
+                    },
+                };
+            })
+        );
+
+        // Send the tool results back to the model to get its next action or final text
+        currentResponse = await chat.sendMessage(functionResponses);
     }
 
-    return { text: response.text() };
+    console.warn(`[gemini] Max tool turns (${maxToolTurns}) exceeded. Forcing exit.`);
+    return { text: currentResponse.response.text() || "(Error: Agent loop exceeded maximum turns)" };
 }

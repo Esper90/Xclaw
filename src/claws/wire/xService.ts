@@ -25,17 +25,24 @@ async function getLegacyClient(): Promise<TwitterApi> {
  * @param text       - The content of the tweet
  * @param telegramId - Telegram user ID whose X credentials to use (optional — falls back to env vars)
  * @param replyToId  - Optional ID of the tweet to reply to (for threads)
+ * @param mediaIds   - Optional array of X media IDs to attach
  */
-export async function postTweet(text: string, telegramId?: string | number, replyToId?: string): Promise<string> {
+export async function postTweet(
+    text: string,
+    telegramId?: string | number,
+    replyToId?: string,
+    mediaIds?: string[]
+): Promise<string> {
     try {
         const client = telegramId
             ? await getUserXClient(telegramId)
             : await getLegacyClient();
-        console.log(`[X] Attempting to post tweet: "${text.substring(0, 50)}..."${replyToId ? ` (reply to ${replyToId})` : ""}`);
+        console.log(`[X] Attempting to post tweet: "${text.substring(0, 50)}..."${replyToId ? ` (reply to ${replyToId})` : ""}${mediaIds ? ` (+${mediaIds.length} media)` : ""}`);
 
         const { data: createdTweet } = await client.v2.tweet({
             text,
             ...(replyToId ? { reply: { in_reply_to_tweet_id: replyToId } } : {}),
+            ...(mediaIds && mediaIds.length > 0 ? { media: { media_ids: mediaIds as [string, ...string[]] } } : {}),
         });
 
         console.log(`[X] Tweet posted successfully! ID: ${createdTweet.id}`);
@@ -52,4 +59,42 @@ export async function postTweet(text: string, telegramId?: string | number, repl
 
         throw new Error(`X API Error: ${error.message || "Unknown error"}`);
     }
+}
+
+/**
+ * Downloads a file from Telegram using its file_id, uploads it to X's v1.1 Media API, 
+ * and returns the X media_id for use in a v2 tweet.
+ */
+export async function uploadTelegramMediaToX(
+    telegramFileId: string,
+    telegramId: string | number
+): Promise<string> {
+    // 1. Get file path from Telegram
+    const getFileUrl = `https://api.telegram.org/bot${config.TELEGRAM_BOT_TOKEN}/getFile?file_id=${telegramFileId}`;
+    const getFileRes = await fetch(getFileUrl);
+    if (!getFileRes.ok) throw new Error("Failed to call Telegram getFile API");
+    const getFileJson = await getFileRes.json();
+    if (!getFileJson.ok) throw new Error("Telegram getFile returned not OK");
+
+    const filePath = getFileJson.result.file_path;
+    if (!filePath) throw new Error("No file_path returned from Telegram");
+
+    // 2. Download the actual file buffer from Telegram
+    const downloadUrl = `https://api.telegram.org/file/bot${config.TELEGRAM_BOT_TOKEN}/${filePath}`;
+    const downloadRes = await fetch(downloadUrl);
+    if (!downloadRes.ok) throw new Error("Failed to download file from Telegram");
+    const buffer = Buffer.from(await downloadRes.arrayBuffer());
+
+    // 3. Determine MIME type (very basic, assumes jpg/png based on extension)
+    const mimeType = filePath.toLowerCase().endsWith(".png") ? "image/png" : "image/jpeg";
+
+    // 4. Upload buffer to X
+    const client = await getUserXClient(telegramId);
+    console.log(`[X] Uploading media to X... (${buffer.length} bytes, ${mimeType})`);
+
+    // v1.1 is required for media uploads, v2 handles the actual tweet
+    const mediaId = await client.v1.uploadMedia(buffer, { mimeType });
+    console.log(`[X] Media uploaded successfully! ID: ${mediaId}`);
+
+    return mediaId;
 }

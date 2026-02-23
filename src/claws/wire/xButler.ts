@@ -491,6 +491,26 @@ export async function fetchDMs(
     // resolve to the real handle without any additional API calls.
     populateKnownSendersCache(results);
 
+    // Persist to Pinecone if not in raw search mode
+    if (!rawMode && results.length > 0) {
+        Promise.allSettled(
+            results.map((m) =>
+                upsertMemory(
+                    xcUserId,
+                    m.text,
+                    {
+                        source: "butler_dm",
+                        dmId: m.id,
+                        senderId: m.senderId,
+                        senderUsername: m.senderUsername ?? "",
+                        createdAt: m.createdAt ?? "",
+                    },
+                    `${xcUserId}-dm-${m.id}` // stable id
+                )
+            )
+        ).catch((e) => console.warn("[butler] dm Pinecone persist error:", e));
+    }
+
     return results;
 }
 
@@ -706,7 +726,7 @@ export async function searchDMs(
                 match: personQuery
                     ? (dm.senderUsername ?? "").toLowerCase().includes(cleanQuery)
                     : (dm.senderUsername ?? "").toLowerCase().includes(cleanQuery) ||
-                      dm.text.toLowerCase().includes(cleanQuery),
+                    dm.text.toLowerCase().includes(cleanQuery),
             }))
             .filter(x => x.match)
             .map(x => x.i);
@@ -974,6 +994,7 @@ export async function runButlerCheck(
  */
 export function startButlerWatcher(
     sendMessage: (chatId: number, text: string) => Promise<void>,
+    isSilenced: (userId: string) => Promise<boolean>,
     chatIdForUser?: Map<string, number>
 ): void {
     // Every 15 minutes
@@ -999,6 +1020,11 @@ export function startButlerWatcher(
                     continue;
                 }
 
+                if (await isSilenced(userId)) {
+                    console.log(`[butler-watch] Skipped (silenced) for userId=${userId}`);
+                    continue;
+                }
+
                 await sendMessage(chatId, summary);
                 console.log(`[butler-watch] Alert sent → userId=${userId}`);
             } catch (err) {
@@ -1008,4 +1034,54 @@ export function startButlerWatcher(
     });
 
     console.log(`[butler-watch] Background watcher active — cron: "${SCHEDULE}"`);
+}
+
+/**
+ * Fetch the user's past original tweets and upsert them into Pinecone
+ * to act as few-shot style examples for the Viral Tweet Generator (Track 5).
+ * 
+ * @param xcUserId Pinecone namespace / Telegram user ID.
+ * @param limit Max tweets to retrieve (default 100, max 100 for a single page).
+ */
+export async function backfillUserTweets(xcUserId: string, limit = 100): Promise<string> {
+    const client = await getUserXClient(xcUserId);
+    const xUserId = await getMyXUserId(xcUserId);
+
+    try {
+        const timeline = await client.v2.userTimeline(xUserId, {
+            max_results: Math.min(Math.max(limit, 5), 100) as any,
+            exclude: ["replies", "retweets"], // We only want original thoughts for style matching
+            "tweet.fields": ["created_at", "public_metrics"],
+        });
+
+        const tweets = timeline.data?.data ?? [];
+        if (tweets.length === 0) return "No original tweets found to backfill.";
+
+        let successCount = 0;
+        for (const tweet of tweets) {
+            const pm = tweet.public_metrics;
+            const engagement = pm ? (pm.like_count ?? 0) + (pm.retweet_count ?? 0) + (pm.reply_count ?? 0) : 0;
+
+            // Optional: You could filter by engagement here if you only want absolute bangers
+            // if (engagement < 5) continue;
+
+            await upsertMemory(
+                xcUserId,
+                tweet.text,
+                {
+                    source: "my_tweet",
+                    tweetId: tweet.id,
+                    createdAt: tweet.created_at ?? "",
+                    engagement: engagement.toString(),
+                },
+                `${xcUserId}-my_tweet-${tweet.id}`
+            );
+            successCount++;
+        }
+
+        return `✅ Backfilled ${successCount} original tweets to Pinecone for Style RAG.`;
+    } catch (err: any) {
+        console.error("[backfillUserTweets] Error fetching timeline:", err);
+        return `❌ Backfill failed: ${err.message}`;
+    }
 }

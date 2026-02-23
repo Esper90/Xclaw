@@ -45,6 +45,9 @@ const schema = z.object({
     X_ACCESS_TOKEN: z.string().optional(),
     X_ACCESS_SECRET: z.string().optional(),
 
+    // Web Search API
+    TAVILY_API_KEY: z.string().optional(),
+
     // X Webhook allowlists (optional — comma-separated handles without @)
     // When set, only these accounts trigger Telegram alerts.
     // Leave unset (or empty) to receive alerts from everyone.

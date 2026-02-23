@@ -8,8 +8,8 @@ export interface McpTool {
     name: string;
     /** Human-readable description for debugging */
     description: string;
-    /** Execute the tool with the given arguments */
-    execute(args: Record<string, unknown>): Promise<string>;
+    /** Execute the tool with the given arguments, plus an optional execution context */
+    execute(args: Record<string, unknown>, context?: Record<string, unknown>): Promise<string>;
     /** Gemini function declaration */
     geminiDeclaration: FunctionDeclaration;
 }
@@ -40,11 +40,11 @@ class ToolRegistry {
     }
 
     /** Dispatch a function call result from Gemini */
-    async dispatch(name: string, args: Record<string, unknown>): Promise<string> {
+    async dispatch(name: string, args: Record<string, unknown>, context?: Record<string, unknown>): Promise<string> {
         const tool = this.tools.get(name);
         if (!tool) return `Error: tool "${name}" not found`;
         try {
-            return await tool.execute(args);
+            return await tool.execute(args, context);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
             return `Error executing tool "${name}": ${msg}`;

@@ -62,6 +62,38 @@ export async function handleVoice(ctx: BotContext): Promise<void> {
             return;
         }
 
+        // 2b. Braindump Mode (Spoken Journal)
+        // If enabled, we just save the transcription to Pinecone and skip the AI reply.
+        if (ctx.session.braindumpMode) {
+            try {
+                const { upsertMemory } = await import("../archive/pinecone");
+                await upsertMemory(userId, transcript, { source: "braindump" });
+                await ctx.api.editMessageText(
+                    ctx.chat!.id,
+                    processing.message_id,
+                    `🧠 *Saved to Memory:*\n_"${transcript}"_`,
+                    { parse_mode: "Markdown" }
+                );
+            } catch (e) {
+                console.error("[voiceHandler] Braindump save failed:", e);
+                await ctx.api.editMessageText(ctx.chat!.id, processing.message_id, "❌ Transcription succeeded but failed to save to memory.");
+            }
+            return;
+        }
+
+        // 2c. Thread Builder Mode
+        // If enabled, push transcription to the thread buffer and skip the AI reply
+        if (ctx.session.threadMode) {
+            ctx.session.threadBuffer.push(transcript);
+            await ctx.api.editMessageText(
+                ctx.chat!.id,
+                processing.message_id,
+                `🧵 *Added to Thread Draft:*\n_"${transcript}"_\n\n_Keep talking/typing, or type /finish to post._`,
+                { parse_mode: "Markdown" }
+            );
+            return;
+        }
+
         // 3. Run text pipeline
         await ctx.api.editMessageText(
             ctx.chat!.id,
