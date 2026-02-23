@@ -9,6 +9,7 @@ import { TwitterApi } from "twitter-api-v2";
 import { upsertUser, deleteUser } from "../../db/userStore";
 import { invalidateUserXClient } from "../../db/getUserClient";
 import { registerAndSubscribeWebhook } from "../../x/webhookManager";
+import { config } from "../../config";
 
 const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
 
@@ -469,17 +470,25 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                 });
                 invalidateUserXClient(telegramId);
             } catch (dbErr: any) {
-                console.error("[setup:validate] SUPABASE ERROR:", dbErr?.message);
+                // Show exactly what URL+key Railway provided so user can spot mismatch
+                const urlInUse = config.SUPABASE_URL ?? "(not set)";
+                const keyLen = config.SUPABASE_SERVICE_KEY?.length ?? 0;
+                const keyPreview = config.SUPABASE_SERVICE_KEY
+                    ? config.SUPABASE_SERVICE_KEY.slice(0, 20) + "…" + config.SUPABASE_SERVICE_KEY.slice(-6)
+                    : "(not set)";
+                console.error("[setup:validate] SUPABASE ERROR:", dbErr?.message, { urlInUse, keyLen });
                 ctx.session.setupWizard = null;
                 await ctx.api.editMessageText(
                     ctx.chat?.id ?? telegramId,
                     validating.message_id,
-                    `⚠️ *X credentials are valid (@${xMe.screen_name}) but database save failed.*\n\n` +
-                    `Error: \`${dbErr?.message ?? "unknown"}\`\n\n` +
-                    `*Fix:* Set these environment variables in Railway:\n` +
-                    `• \`SUPABASE_URL\` — Project Settings → API → Project URL\n` +
-                    `• \`SUPABASE_SERVICE_KEY\` — Project Settings → API → \`service_role\` key\n\n` +
-                    `Then run /setup again.`,
+                    `⚠️ *X credentials valid (@${xMe.screen_name}) but Supabase rejected the key.*\n\n` +
+                    `*Error:* \`${dbErr?.message ?? "unknown"}\`\n\n` +
+                    `*What Railway is sending to Supabase:*\n` +
+                    `• URL: \`${urlInUse}\`\n` +
+                    `• Key (${keyLen} chars): \`${keyPreview}\`\n\n` +
+                    `⚠️ Make sure the URL and key are from the *same* Supabase project.\n` +
+                    `Go to Supabase → your project → Settings → API and verify both match.\n\n` +
+                    `Then update Railway Variables and redeploy.`,
                     { parse_mode: "Markdown" }
                 );
                 break;
