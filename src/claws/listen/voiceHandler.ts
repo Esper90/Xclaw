@@ -119,16 +119,26 @@ export async function handleVoice(ctx: BotContext): Promise<void> {
         }
 
         // 5. Always update the text message with the reply, so user can see it (esp. for drafts)
-        await ctx.api.editMessageText(
-            ctx.chat!.id,
-            processing.message_id,
-            `🎙️ _"${transcript}"_\n\n${replyText}`,
-            { parse_mode: "Markdown" }
-        ).catch(() => {
-            // If editing fails (e.g. message already deleted), just send a new one
-            if (ttsSent) return; // If voice note was sent, don't spam if edit fails
-            ctx.reply(`${replyText}`);
-        });
+        try {
+            await ctx.api.editMessageText(
+                ctx.chat!.id,
+                processing.message_id,
+                `🎙️ _"${transcript}"_\n\n${replyText}`,
+                { parse_mode: "Markdown" }
+            );
+        } catch (editErr) {
+            // If markdown formatting breaks Telegram's strict parser, fallback to raw text
+            try {
+                await ctx.api.editMessageText(
+                    ctx.chat!.id,
+                    processing.message_id,
+                    `🎙️ "${transcript}"\n\n${replyText}`
+                );
+            } catch (rawErr) {
+                // If editing fails completely (e.g. message deleted or too long), send a new text message
+                await ctx.reply(`${replyText}`).catch(() => { });
+            }
+        }
     } catch (err) {
         console.error(`[voiceHandler] Error:`, err);
         await ctx.reply("❌ Voice processing failed. Please try again.");
