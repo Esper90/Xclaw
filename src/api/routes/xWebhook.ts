@@ -227,11 +227,11 @@ xWebhookRouter.post("/", async (req: Request, res: Response) => {
 
             await upsertMemory(String(chatId), text, {
                 source: "butler_dm",
-                dmId: evt.message_create.id ?? evt.id ?? Date.now().toString(),
+                dmId: evt.id ?? Date.now().toString(),
                 senderId: sender_id,
                 senderUsername: username,
                 createdAt: evt.created_timestamp ?? new Date().toISOString()
-            }, `${chatId}-dm-${evt.message_create.id ?? evt.id}`);
+            }, `${chatId}-dm-${evt.id}`);
 
         } catch (err) {
             console.error("[x-webhook] Failed to forward DM to Telegram:", err);
@@ -390,11 +390,11 @@ xWebhookRouter.post("/:telegramId", async (req: Request, res: Response) => {
 
             await upsertMemory(String(telegramId), text, {
                 source: "butler_dm",
-                dmId: evt.message_create.id ?? evt.id ?? Date.now().toString(),
+                dmId: evt.id ?? Date.now().toString(),
                 senderId: sender_id,
                 senderUsername: username,
                 createdAt: evt.created_timestamp ?? new Date().toISOString()
-            }, `${telegramId}-dm-${evt.message_create.id ?? evt.id}`);
+            }, `${telegramId}-dm-${evt.id}`);
 
         } catch (err) {
             console.error(`[x-webhook/${telegramId}] Failed to forward DM:`, err);

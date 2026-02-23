@@ -3,7 +3,7 @@ import { handleText } from "./textHandler";
 import { handleVoice } from "./voiceHandler";
 import { handlePhoto } from "./photoHandler";
 import { registerHeartbeat, unregisterHeartbeat } from "../sense/heartbeat";
-import { queryMemory, forgetMemory } from "../archive/pinecone";
+import { queryMemory, forgetMemory, upsertMemory } from "../archive/pinecone";
 import { postTweet } from "../wire/xService";
 import { fetchMentions, fetchDMs } from "../wire/xButler";
 import { TwitterApi } from "twitter-api-v2";
@@ -278,6 +278,9 @@ ${dmLines.join("\n") || "No new DMs."}`;
 
         const waitMsg = await ctx.reply("✍️ Compiling your thread...");
 
+        let previousTweetId: string | undefined;
+        let postedCount = 0;
+
         try {
             const ai = new GoogleGenerativeAI(config.GEMINI_API_KEY);
             const model = ai.getGenerativeModel({ model: config.GEMINI_MODEL });
@@ -305,8 +308,6 @@ ${buffer.join("\n")}`;
             await ctx.api.editMessageText(ctx.chat.id, waitMsg.message_id, `🐦 Posting a thread of ${tweets.length} tweets to X...`);
 
             const userId = String(ctx.from!.id);
-            let previousTweetId: string | undefined;
-            let postedCount = 0;
 
             for (let i = 0; i < tweets.length; i++) {
                 const tweetText = tweets[i];

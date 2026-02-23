@@ -66,7 +66,7 @@ export async function handleVoice(ctx: BotContext): Promise<void> {
         // If enabled, we just save the transcription to Pinecone and skip the AI reply.
         if (ctx.session.braindumpMode) {
             try {
-                const { upsertMemory } = await import("../archive/pinecone");
+                const { upsertMemory } = await import("../archive/pinecone.js");
                 await upsertMemory(userId, transcript, { source: "braindump" });
                 await ctx.api.editMessageText(
                     ctx.chat!.id,

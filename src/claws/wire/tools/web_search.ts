@@ -1,5 +1,5 @@
 import { SchemaType } from "@google/generative-ai";
-import { config } from "../../config";
+import { config } from "../../../config";
 import { registry, McpTool } from "./registry";
 
 /**
