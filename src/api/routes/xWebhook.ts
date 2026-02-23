@@ -18,7 +18,8 @@
 import crypto from "crypto";
 import { Router, type Request, type Response } from "express";
 import { config } from "../../config";
-import { lookupKnownSender, resolveXUserId, getMyXUserId } from "../../claws/wire/xButler";
+import { lookupKnownSender, resolveXUserId } from "../../claws/wire/xButler";
+import { getUser, getUserByXUserId, isSupabaseConfigured } from "../../db/userStore";
 
 // ── Injected Telegram sender ──────────────────────────────────────────────────
 let _sendMessage: ((chatId: number, text: string) => Promise<void>) | null = null;
@@ -79,15 +80,15 @@ interface XWebhookPayload {
  * Header: x-twitter-webhooks-signature: sha256=<base64>
  * Docs: https://developer.x.com/en/docs/x-api/enterprise/account-activity-api/guides/securing-webhooks
  */
-function verifySignature(req: Request): boolean {
-    const secret = config.X_CONSUMER_SECRET;
-    if (!secret) return false;
+function verifySignature(req: Request, secret?: string): boolean {
+    const consumerSecret = secret ?? config.X_CONSUMER_SECRET;
+    if (!consumerSecret) return false;
     const sig = req.headers["x-twitter-webhooks-signature"] as string | undefined;
     if (!sig?.startsWith("sha256=")) return false;
     const expected =
         "sha256=" +
         crypto
-            .createHmac("sha256", secret)
+            .createHmac("sha256", consumerSecret)
             .update(JSON.stringify(req.body))
             .digest("base64");
     try {
@@ -188,13 +189,8 @@ xWebhookRouter.post("/", async (req: Request, res: Response) => {
     const usersMap = payload.users ?? {};
     const chatId = defaultChatId();
 
-    let myXId: string;
-    try {
-        myXId = await getMyXUserId();
-    } catch (err) {
-        console.error("[x-webhook] Cannot get authenticated X user ID — event dropped:", err);
-        return;
-    }
+    // for_user_id IS the authenticated user's X ID for this subscription — no API call needed
+    const myXId = payload.for_user_id;
 
     // ── DM events ─────────────────────────────────────────────────────────────
     for (const evt of payload.direct_message_events ?? []) {
@@ -256,6 +252,145 @@ xWebhookRouter.post("/", async (req: Request, res: Response) => {
             await _sendMessage(chatId, formatMentionAlert(username, text, tweet.id_str));
         } catch (err) {
             console.error("[x-webhook] Failed to forward mention to Telegram:", err);
+        }
+    }
+});
+
+// ── Per-user routes (multi-user / user-owned keys model) ──────────────────────
+// URL pattern: /x-webhook/:telegramId
+// Each user registers their own webhook pointing to this URL with their Telegram ID
+// appended so the CRC and POST handlers can look up their specific credentials and
+// route events to their Telegram chat.
+
+/**
+ * GET /x-webhook/:telegramId
+ * Per-user CRC challenge — uses that user's consumer secret for the HMAC.
+ */
+xWebhookRouter.get("/:telegramId", async (req: Request, res: Response) => {
+    const crc = req.query.crc_token as string | undefined;
+    if (!crc) {
+        res.status(400).json({ error: "Missing crc_token" });
+        return;
+    }
+
+    const telegramId = parseInt(req.params["telegramId"] as string, 10);
+    if (isNaN(telegramId)) {
+        res.status(400).json({ error: "Invalid telegramId" });
+        return;
+    }
+
+    // Look up this user's consumer secret — falls back to global env var
+    let consumerSecret = config.X_CONSUMER_SECRET;
+    if (isSupabaseConfigured()) {
+        try {
+            const user = await getUser(telegramId);
+            if (user) consumerSecret = user.x_consumer_secret;
+        } catch (err) {
+            console.warn(`[x-webhook/:tid] DB lookup failed for CRC (tid=${telegramId}):`, err);
+        }
+    }
+
+    if (!consumerSecret) {
+        res.status(500).json({ error: "Consumer secret not found for this user" });
+        return;
+    }
+
+    const hash = crypto
+        .createHmac("sha256", consumerSecret)
+        .update(crc)
+        .digest("base64");
+    console.log(`[x-webhook/${telegramId}] CRC challenge answered ✓`);
+    res.json({ response_token: `sha256=${hash}` });
+});
+
+/**
+ * POST /x-webhook/:telegramId
+ * Per-user event handler — routes DM and mention events to the correct Telegram chat.
+ */
+xWebhookRouter.post("/:telegramId", async (req: Request, res: Response) => {
+    res.sendStatus(200);
+
+    const telegramId = parseInt(req.params["telegramId"] as string, 10);
+    if (isNaN(telegramId)) return;
+
+    const keys = Object.keys(req.body ?? {});
+    console.log(`[x-webhook/${telegramId}] POST received — payload keys: [${keys.join(", ") || "EMPTY"}]`);
+    if (keys.length === 0) return;
+
+    if (!_sendMessage) {
+        console.warn(`[x-webhook/${telegramId}] No Telegram sender injected — event dropped`);
+        return;
+    }
+
+    const payload = req.body as XWebhookPayload;
+    const usersMap = payload.users ?? {};
+    const myXId = payload.for_user_id; // The subscribed X user's ID
+
+    // Load per-user allowlists from DB (fall back to global env allowlists)
+    let userMentionAllowlist = mentionAllowlist;
+    let userDmAllowlist = dmAllowlist;
+    let consumerSecret = config.X_CONSUMER_SECRET;
+    if (isSupabaseConfigured()) {
+        try {
+            const userRow = await getUser(telegramId);
+            if (userRow) {
+                userMentionAllowlist = parseAllowlist(userRow.mention_allowlist ?? undefined);
+                userDmAllowlist = parseAllowlist(userRow.dm_allowlist ?? undefined);
+                consumerSecret = userRow.x_consumer_secret;
+            }
+        } catch (err) {
+            console.warn(`[x-webhook/${telegramId}] DB lookup failed:`, err);
+        }
+    }
+
+    // Verify HMAC signature
+    if (!verifySignature(req, consumerSecret ?? undefined)) {
+        console.warn(`[x-webhook/${telegramId}] ⚠ Signature mismatch`);
+    }
+
+    // ── DM events ─────────────────────────────────────────────────────────────
+    for (const evt of payload.direct_message_events ?? []) {
+        if (evt.type !== "message_create") continue;
+        const { sender_id, message_data } = evt.message_create;
+        if (sender_id === myXId) continue; // Skip own outbound messages
+
+        const text = message_data.text;
+        const payloadUser = usersMap[sender_id];
+        const username =
+            payloadUser?.screen_name ??
+            lookupKnownSender(sender_id)?.username ??
+            (await resolveXUserId(sender_id, telegramId));
+
+        if (userDmAllowlist && !userDmAllowlist.has(username.toLowerCase())) {
+            console.log(`[x-webhook/${telegramId}] 📩 DM from @${username} — filtered`);
+            continue;
+        }
+        console.log(`[x-webhook/${telegramId}] 📩 DM from @${username}: "${text.slice(0, 80)}"`);
+        try {
+            await _sendMessage(telegramId, formatDMAlert(username, text));
+        } catch (err) {
+            console.error(`[x-webhook/${telegramId}] Failed to forward DM:`, err);
+        }
+    }
+
+    // ── Mention events ─────────────────────────────────────────────────────────
+    for (const tweet of payload.tweet_create_events ?? []) {
+        if (tweet.user?.id_str === myXId) continue; // Skip own tweets
+        const tweetMentions = tweet.entities?.user_mentions ?? [];
+        if (!tweetMentions.some((m) => m.id_str === myXId)) continue;
+
+        const username = tweet.user?.screen_name ?? tweet.user?.id_str;
+        const text = tweet.full_text ?? tweet.text;
+
+        if (userMentionAllowlist && !userMentionAllowlist.has(username.toLowerCase())) {
+            console.log(`[x-webhook/${telegramId}] 🔔 Mention from @${username} — filtered`);
+            continue;
+        }
+        console.log(`[x-webhook/${telegramId}] 🔔 Mention from @${username}: "${text.slice(0, 80)}"`);
+        try {
+            await _sendMessage(telegramId, formatMentionAlert(username, text, tweet.id_str));
+        } catch (err) {
+            console.error(`[x-webhook/${telegramId}] Failed to forward mention:`, err);
         }
     }
 });

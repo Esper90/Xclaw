@@ -16,6 +16,7 @@ bot.use(
             voiceEnabled: false,
             heartbeatEnabled: false,
             pendingDMs: [],
+            setupWizard: null,
         }),
     })
 );

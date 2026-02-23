@@ -20,6 +20,7 @@
 
 import { TwitterApi } from "twitter-api-v2";
 import type { UserV2, TweetV2 } from "twitter-api-v2";
+import { getUserXClient } from "../../db/getUserClient";
 
 /** Minimal shape from GET /2/dm_events — DMEventV2 is not re-exported by twitter-api-v2's public index. */
 type LocalDMEvent = {
@@ -71,12 +72,16 @@ export function lookupKnownSender(senderId: string): { id: string; username: str
 /**
  * Resolve an X user ID to a username via the API, with cache population.
  * Falls back to returning the raw ID string if the lookup fails.
+ *
+ * @param senderId   Numeric X user ID to look up.
+ * @param telegramId Telegram user ID used to pick the right X client (optional — falls back to env creds).
  */
-export async function resolveXUserId(senderId: string): Promise<string> {
+export async function resolveXUserId(senderId: string, telegramId?: string | number): Promise<string> {
     const cached = knownSendersByIdCache.get(senderId);
     if (cached) return cached.username;
     try {
-        const client = getClient();
+        const clientId = telegramId ?? "0";
+        const client = await getUserXClient(clientId);
         const { data } = await client.v2.user(senderId, { "user.fields": ["username"] });
         if (data?.username) {
             populateKnownSendersCache([{ senderId, senderUsername: data.username }]);
@@ -93,37 +98,22 @@ const ENGAGEMENT_ALERT_THRESHOLD = 10;
 /** Maximum suggested replies generated per call — keeps Gemini costs low. */
 const MAX_REPLY_SUGGESTIONS = 3;
 
-// ── Singleton X client ────────────────────────────────────────────────────────
-let _client: TwitterApi | null = null;
-let _myXUserId: string | null = null;
+// ── Per-user X user ID cache ──────────────────────────────────────────────────
+// Keyed by Telegram user ID string to avoid re-fetching me() on every call.
+const _myXUserIdCache = new Map<string, string>();
 
-function getClient(): TwitterApi {
-    if (!config.X_CONSUMER_KEY || !config.X_CONSUMER_SECRET ||
-        !config.X_ACCESS_TOKEN || !config.X_ACCESS_SECRET) {
-        throw new Error(
-            "X API credentials not configured. " +
-            "Set X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET in .env"
-        );
-    }
-    if (!_client) {
-        _client = new TwitterApi({
-            appKey: config.X_CONSUMER_KEY,
-            appSecret: config.X_CONSUMER_SECRET,
-            accessToken: config.X_ACCESS_TOKEN,
-            accessSecret: config.X_ACCESS_SECRET,
-        });
-    }
-    return _client;
-}
-
-/** Returns the authenticated user's numeric X user ID (cached after first call). */
-export async function getMyXUserId(): Promise<string> {
-    if (_myXUserId) return _myXUserId;
-    const client = getClient();
+/**
+ * Returns the X user ID for the given Telegram user (cached per user).
+ * This replaces the old singleton getMyXUserId().
+ */
+export async function getMyXUserId(xcUserId: string): Promise<string> {
+    const cached = _myXUserIdCache.get(xcUserId);
+    if (cached) return cached;
+    const client = await getUserXClient(xcUserId);
     const { data } = await client.v2.me({ "user.fields": ["id", "username"] });
-    _myXUserId = data.id;
-    console.log(`[butler] Authenticated as X user @${data.username} (${data.id})`);
-    return _myXUserId;
+    _myXUserIdCache.set(xcUserId, data.id);
+    console.log(`[butler] @${data.username} (${data.id}) ← telegramId=${xcUserId}`);
+    return data.id;
 }
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -239,8 +229,8 @@ export async function fetchMentions(
     since?: string,
     cheapMode = false
 ): Promise<ButlerMention[]> {
-    const client = getClient();
-    const xUserId = await getMyXUserId();
+    const client = await getUserXClient(xcUserId);
+    const xUserId = await getMyXUserId(xcUserId);
 
     const params: Parameters<typeof client.v2.userMentionTimeline>[1] = {
         max_results: Math.min(Math.max(limit, 5), 100) as any,
@@ -336,8 +326,8 @@ export async function fetchDMs(
     cheapMode = false,
     rawMode = false   // when true: skip Pinecone scoring entirely — used by searchDMs
 ): Promise<ButlerDM[]> {
-    const client = getClient();
-    const myId = await getMyXUserId();
+    const client = await getUserXClient(xcUserId);
+    const myId = await getMyXUserId(xcUserId);
 
     // X API supports max_results 1–100 for GET /2/dm_events
     const perPage = Math.min(Math.max(limit, 1), 100);
@@ -519,7 +509,7 @@ function extractDMTarget(query: string): string {
  * (exact handle first, then v1 search fallback) then fetch only THEIR conversation.
  * senderUsername is guaranteed correct — no expansion needed.
  */
-async function findDMsFromPerson(query: string): Promise<ButlerDM[]> {
+async function findDMsFromPerson(xcUserId: string, query: string): Promise<ButlerDM[]> {
     const targetName = extractDMTarget(query);
     console.log(`[DM Search DEBUG] Raw query: "${query}" → extracted targetName: "${targetName}"`);
 
@@ -528,7 +518,7 @@ async function findDMsFromPerson(query: string): Promise<ButlerDM[]> {
         return [];
     }
 
-    const client = getClient();
+    const client = await getUserXClient(xcUserId);
 
     // Step 0: check known-senders cache — resolves partial names like "sage" → "@sageisthename1"
     // populated from all previous fetchDMs calls this session.
@@ -562,7 +552,7 @@ async function findDMsFromPerson(query: string): Promise<ButlerDM[]> {
     console.log(`[DM Search DEBUG] v1.searchUsers unavailable on Free tier — relying on broad search + ID resolution fallback`);
 
     // Step 3: try all candidates (exact first, then search results) — pick the first with actual DMs
-    const myId = await getMyXUserId();
+    const myId = await getMyXUserId(xcUserId);
     const allCandidates = [...exactCandidates, ...searchCandidates.filter(c => !exactCandidates.some(e => e.id === c.id))];
     console.log(`[DM Search DEBUG] ${allCandidates.length} total candidates to check for DMs`);
 
@@ -637,7 +627,7 @@ export async function searchDMs(
     console.log(`[DM Search DEBUG] === START searchDMs query: "${query}" ===`);
 
     // ── Step 0: Person-specific path (most accurate) ─────────────────────────
-    const personMatches = await findDMsFromPerson(query);
+    const personMatches = await findDMsFromPerson(xcUserId, query);
     if (personMatches.length > 0) {
         console.log(`[DM Search DEBUG] SUCCESS — returning ${personMatches.length} DMs from person`);
         return personMatches;
@@ -653,7 +643,7 @@ export async function searchDMs(
     // ── Second-chance username resolution ────────────────────────────────────
     // fetchDMs already tried a batch lookup; this catches any still-unresolved senders
     // by calling GET /2/users/:id individually (v2 free-tier safe, max 10 calls).
-    const client = getClient();
+    const client = await getUserXClient(xcUserId);
     const stillMissing = [...new Map(
         allDMs.filter(dm => !dm.senderUsername).map(dm => [dm.senderId, dm])
     ).values()].slice(0, 10);
@@ -803,7 +793,7 @@ export async function postButlerReply(
     isDM = false,
     conversationId?: string
 ): Promise<ButlerReplyResult> {
-    const client = getClient();
+    const client = await getUserXClient(xcUserId);
 
     try {
         let resultId: string;

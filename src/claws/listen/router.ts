@@ -5,6 +5,10 @@ import { registerHeartbeat, unregisterHeartbeat } from "../sense/heartbeat";
 import { queryMemory } from "../archive/pinecone";
 import { postTweet } from "../wire/xService";
 import { fetchMentions, fetchDMs } from "../wire/xButler";
+import { TwitterApi } from "twitter-api-v2";
+import { upsertUser, deleteUser } from "../../db/userStore";
+import { invalidateUserXClient } from "../../db/getUserClient";
+import { registerAndSubscribeWebhook } from "../../x/webhookManager";
 
 const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
 
@@ -19,6 +23,8 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `🦾 *Xclaw online.*\n\n` +
             `I'm your private AI assistant with long-term memory.\n\n` +
             `*Commands:*\n` +
+            `/setup — Connect your X account (first-time setup)\n` +
+            `/deletekeys — Remove your X credentials\n` +
             `/mentions — Check important X mentions\n` +
             `/dms — Check recent X DMs\n` +
             `/post <text> — Post a tweet to X\n` +
@@ -159,11 +165,11 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             await ctx.reply("Usage: /post <your tweet content>");
             return;
         }
-
+        const userId = String(ctx.from!.id);
         const waitMsg = await ctx.reply("🐦 Posting to X...");
 
         try {
-            const tweetId = await postTweet(text);
+            const tweetId = await postTweet(text, userId);
             await ctx.api.editMessageText(
                 ctx.chat.id,
                 waitMsg.message_id,
@@ -250,6 +256,34 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
         }
     });
 
+    // ── /setup — X credential onboarding wizard ──────────────────────────────
+    bot.command("setup", async (ctx) => {
+        ctx.session.setupWizard = { step: "consumer_key", partial: {} };
+        await ctx.reply(
+            `🔑 *Connect your X account*\n\n` +
+            `You'll need an X Developer App with Read + Write + Direct Messages permissions.\n` +
+            `Create one at [developer.x.com](https://developer.x.com) → Apps → Keys and Tokens.\n\n` +
+            `*Step 1 of 4 — Consumer Key (API Key)*\n` +
+            `Paste your Consumer Key:`,
+            { parse_mode: "Markdown" }
+        );
+    });
+
+    // ── /deletekeys — remove stored X credentials ─────────────────────────────
+    bot.command("deletekeys", async (ctx) => {
+        const telegramId = ctx.from!.id;
+        try {
+            await deleteUser(telegramId);
+            invalidateUserXClient(telegramId);
+            await ctx.reply(
+                "🗑 *X credentials removed.*\n\nRun /setup to connect a new account.",
+                { parse_mode: "Markdown" }
+            );
+        } catch (err: any) {
+            await ctx.reply(`❌ Failed to remove credentials: ${err.message}`);
+        }
+    });
+
     // ── Voice / Audio messages ─────────────────────────────────────────────────
     bot.on("message:voice", handleVoice);
     bot.on("message:audio", handleVoice);
@@ -258,6 +292,12 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
     bot.on("message:text", async (ctx) => {
         const userMessage = ctx.message.text;
         if (!userMessage) return;
+
+        // Setup wizard intercept — handle credential inputs before general AI
+        if (ctx.session.setupWizard) {
+            await handleSetupWizard(ctx, userMessage);
+            return;
+        }
 
         // Show typing indicator
         await ctx.replyWithChatAction("typing");
@@ -270,4 +310,125 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             await ctx.reply("❌ Something went wrong. Please try again.");
         }
     });
+}
+
+// ── Setup wizard ──────────────────────────────────────────────────────────────
+/**
+ * Handle one step of the /setup credential wizard.
+ * Called from the message:text handler when ctx.session.setupWizard is active.
+ */
+async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> {
+    const wizard = ctx.session.setupWizard!;
+    const telegramId = ctx.from!.id;
+
+    // Allow aborting mid-wizard
+    if (input.trim().toLowerCase() === "/cancel") {
+        ctx.session.setupWizard = null;
+        await ctx.reply("❌ Setup cancelled.");
+        return;
+    }
+
+    const trimmed = input.trim();
+    // Basic sanity check — all four X tokens are long with no spaces
+    if (!trimmed || trimmed.length < 10 || trimmed.includes(" ")) {
+        await ctx.reply(
+            "⚠️ That doesn't look right — X tokens have no spaces and are at least 10 characters.\n" +
+            "Please paste the key exactly as shown in the developer portal."
+        );
+        return;
+    }
+
+    switch (wizard.step) {
+        case "consumer_key":
+            wizard.partial.consumer_key = trimmed;
+            wizard.step = "consumer_secret";
+            await ctx.reply(
+                `✅ Consumer Key saved.\n\n*Step 2 of 4 — Consumer Secret (API Key Secret)*\nPaste your Consumer Secret:`,
+                { parse_mode: "Markdown" }
+            );
+            break;
+
+        case "consumer_secret":
+            wizard.partial.consumer_secret = trimmed;
+            wizard.step = "access_token";
+            await ctx.reply(
+                `✅ Consumer Secret saved.\n\n*Step 3 of 4 — Access Token*\nPaste your Access Token:`,
+                { parse_mode: "Markdown" }
+            );
+            break;
+
+        case "access_token":
+            wizard.partial.access_token = trimmed;
+            wizard.step = "access_secret";
+            await ctx.reply(
+                `✅ Access Token saved.\n\n*Step 4 of 4 — Access Token Secret*\nPaste your Access Token Secret:`,
+                { parse_mode: "Markdown" }
+            );
+            break;
+
+        case "access_secret": {
+            wizard.partial.access_secret = trimmed;
+            const validating = await ctx.reply("🔄 Validating credentials with X API…");
+
+            try {
+                // Verify credentials live — v2.me() returns 401 if anything is wrong
+                const testClient = new TwitterApi({
+                    appKey: wizard.partial.consumer_key!,
+                    appSecret: wizard.partial.consumer_secret!,
+                    accessToken: wizard.partial.access_token!,
+                    accessSecret: trimmed,
+                });
+                const { data: xMe } = await testClient.v2.me({ "user.fields": ["id", "username"] });
+
+                // Persist to Supabase
+                await upsertUser({
+                    telegram_id: telegramId,
+                    x_user_id: xMe.id,
+                    x_username: xMe.username,
+                    x_consumer_key: wizard.partial.consumer_key!,
+                    x_consumer_secret: wizard.partial.consumer_secret!,
+                    x_access_token: wizard.partial.access_token!,
+                    x_access_secret: trimmed,
+                });
+                invalidateUserXClient(telegramId);
+
+                // Register & subscribe the per-user webhook
+                let webhookNote = "";
+                try {
+                    const wh = await registerAndSubscribeWebhook(
+                        wizard.partial.consumer_key!,
+                        wizard.partial.consumer_secret!,
+                        wizard.partial.access_token!,
+                        trimmed,
+                        telegramId
+                    );
+                    webhookNote = wh.subscribed
+                        ? `\n\n✅ *Real-time alerts active!* DMs and mentions will arrive here instantly.\nWebhook ID: \`${wh.webhookId}\``
+                        : `\n\n⚠️ Credentials saved but webhook subscription failed. Run /setup again to retry.`;
+                } catch (whErr: any) {
+                    webhookNote = `\n\n⚠️ Credentials saved, but webhook setup failed: ${whErr.message}\nRun /setup again to retry.`;
+                }
+
+                ctx.session.setupWizard = null;
+                await ctx.api.editMessageText(
+                    ctx.chat?.id ?? telegramId,
+                    validating.message_id,
+                    `✅ *Connected as @${xMe.username}!*\n\n` +
+                    `Your credentials are stored securely in the database.` +
+                    webhookNote +
+                    `\n\n_Use /deletekeys to disconnect at any time._`,
+                    { parse_mode: "Markdown" }
+                );
+            } catch (err: any) {
+                ctx.session.setupWizard = null;
+                await ctx.api.editMessageText(
+                    ctx.chat?.id ?? telegramId,
+                    validating.message_id,
+                    `❌ *Credential validation failed.*\n\n${err.message}\n\nDouble-check your keys and run /setup again.`,
+                    { parse_mode: "Markdown" }
+                );
+            }
+            break;
+        }
+    }
 }
