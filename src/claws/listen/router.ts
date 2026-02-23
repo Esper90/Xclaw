@@ -469,15 +469,27 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                     { parse_mode: "Markdown" }
                 );
             } catch (err: any) {
-                // ── Diagnose which key pair caused the failure ─────────────
-                // X returns specific error codes inside the response body.
-                // Code 32  → "Could not authenticate you" → Consumer Key/Secret wrong
-                // Code 89  → "Invalid or expired token"   → Access Token/Secret wrong
-                // Code 215 → "Bad authentication data"    → could be either pair
+                // ── Log full raw error for diagnosis ──────────────────────
+                console.error("[setup:validate] RAW ERROR:", JSON.stringify({
+                    message: err?.message,
+                    code: err?.code,
+                    status: err?.data?.status ?? err?.status,
+                    xErrors: err?.data?.errors ?? err?.errors,
+                    detail: err?.data?.detail,
+                    type: err?.data?.type,
+                }, null, 2));
+
                 const xCode: number | undefined =
                     err?.data?.errors?.[0]?.code ??
                     err?.errors?.[0]?.code ??
                     undefined;
+                const xMessage: string =
+                    err?.data?.errors?.[0]?.message ??
+                    err?.data?.detail ??
+                    err?.message ??
+                    "unknown error";
+                const httpStatus: number | undefined =
+                    err?.data?.status ?? err?.status ?? err?.code;
                 const msg: string = (err?.message ?? "").toLowerCase();
 
                 const isConsumerBad =
@@ -493,27 +505,19 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                     msg.includes("access");
 
                 if (isConsumerBad && !isAccessBad) {
-                    // Error 32 = consumer key mismatch OR access token generated under old consumer key.
-                    // We can't tell which — and regenerating Consumer Keys always invalidates existing
-                    // Access Tokens. Safest = restart all 4 keys with an explanation.
                     wizard.step = "consumer_key";
                     wizard.partial = {};
                     wizard.retryMode = true;
                     await ctx.api.editMessageText(
                         ctx.chat?.id ?? telegramId,
                         validating.message_id,
-                        `❌ *Authentication failed (your keys don't match each other).*\n\n` +
-                        `⚠️ *Important X rule:* When you regenerate your Consumer Key, X automatically invalidates your old Access Token — they are linked.\n\n` +
-                        `To fix: *re-enter all 4 values* using tokens that were generated at the same time.\n\n` +
-                        `*Steps:*\n` +
-                        `1. Open your app on the X developer portal\n` +
-                        `2. *"OAuth 1.0 Keys"* section → click *"Show"* and copy both values\n` +
-                        `3. Then scroll to *"Access Token"* → click *"Regenerate"* → copy both values from the dialog\n\n` +
-                        `👇 Start with your *Consumer Key* (first value from the "Show" dialog):`,
+                        `❌ *Authentication failed*\n\n` +
+                        `🔍 *Raw X error:* HTTP ${httpStatus ?? "?"} | code ${xCode ?? "?"} | \`${xMessage}\`\n\n` +
+                        `We need to see this to diagnose the issue. Screenshot this message and share it.\n\n` +
+                        `Then re-enter all 4 keys — start with your *Consumer Key*:`,
                         { parse_mode: "Markdown" }
                     );
                 } else if (isAccessBad && !isConsumerBad) {
-                    // Reset wizard to access_token step, keep consumer keys intact
                     wizard.step = "access_token";
                     wizard.partial.access_token = undefined;
                     wizard.partial.access_secret = undefined;
@@ -521,27 +525,23 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                     await ctx.api.editMessageText(
                         ctx.chat?.id ?? telegramId,
                         validating.message_id,
-                        `❌ *Access Token or Access Token Secret is incorrect.*\n\n` +
-                        `Your Consumer Key is fine — you only need to re-enter the last two keys.\n\n` +
-                        `On the X developer portal:\n` +
-                        `Open your app → scroll to *"Access Token"* → click *"Regenerate"*\n` +
-                        `Copy *both values* from the dialog before closing it.\n\n` +
-                        `👇 Re-enter your *Access Token* (first value — starts with numbers):`,
+                        `❌ *Authentication failed*\n\n` +
+                        `🔍 *Raw X error:* HTTP ${httpStatus ?? "?"} | code ${xCode ?? "?"} | \`${xMessage}\`\n\n` +
+                        `We need to see this to diagnose the issue. Screenshot this message and share it.\n\n` +
+                        `Then re-enter your *Access Token* (keeps your Consumer Key):`,
                         { parse_mode: "Markdown" }
                     );
                 } else {
-                    // Unknown error — drop back to start but keep nothing
                     wizard.step = "consumer_key";
                     wizard.partial = {};
                     wizard.retryMode = true;
                     await ctx.api.editMessageText(
                         ctx.chat?.id ?? telegramId,
                         validating.message_id,
-                        `❌ *Validation failed — ${err?.data?.errors?.[0]?.message ?? err.message}*\n\n` +
-                        `We couldn't identify which key caused the issue.\n` +
-                        `Please re-enter all 4 keys from scratch.\n\n` +
-                        `Open your app on the X developer portal → *"OAuth 1.0 Keys"* → click *"Show"*\n\n` +
-                        `👇 Re-enter your *Consumer Key*:`,
+                        `❌ *Authentication failed*\n\n` +
+                        `🔍 *Raw X error:* HTTP ${httpStatus ?? "?"} | code ${xCode ?? "?"} | \`${xMessage}\`\n\n` +
+                        `We need to see this to diagnose the issue. Screenshot this message and share it.\n\n` +
+                        `Then re-enter all 4 keys — start with your *Consumer Key*:`,
                         { parse_mode: "Markdown" }
                     );
                 }
