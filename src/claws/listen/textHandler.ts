@@ -119,7 +119,7 @@ export async function handleText(
         tools,
         // Bind dispatch to registry so 'this' context isn't lost
         (name, args, executionCtx) => registry.dispatch(name, args, executionCtx),
-        { ctx }
+        { ctx, userId, chatId: ctx.chat?.id }
     );
 
     const finalText = reply.text;
