@@ -368,7 +368,7 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
             await ctx.reply(
                 `✅ *Consumer Key saved!*\n\n` +
                 `─────────\n` +
-                `*Step 2 of 4 — Consumer Secret*\n\n` +
+                `*${wizard.retryMode ? "Re-enter" : "Step 2 of 4 —"} Consumer Secret*\n\n` +
                 `Same *"Show"* dialog you just used — don't close it.\n\n` +
                 `The *second value* shown below the Consumer Key is the *Consumer Secret*.\n` +
                 `It's a longer random string (~50 characters).\n\n` +
@@ -384,7 +384,7 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
             await ctx.reply(
                 `✅ *Consumer Secret saved!*\n\n` +
                 `─────────\n` +
-                `*Step 3 of 4 — Access Token*\n\n` +
+                `*${wizard.retryMode ? "Re-enter" : "Step 3 of 4 —"} Access Token*\n\n` +
                 `Go back to the keys page (same page as before).\n\n` +
                 `Scroll down a little — still under *"OAuth 1.0 Keys"*,\n` +
                 `you'll see *"Access Token"* with a *Regenerate* button.\n\n` +
@@ -404,7 +404,7 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
             await ctx.reply(
                 `✅ *Access Token saved!*\n\n` +
                 `─────────\n` +
-                `*Step 4 of 4 — Access Token Secret*\n\n` +
+                `*${wizard.retryMode ? "Re-enter" : "Step 4 of 4 —"} Access Token Secret*\n\n` +
                 `This is the *second value* from the Regenerate dialog you just used.\n\n` +
                 `• If you copied it already — paste it now ✅\n` +
                 `• If you closed the dialog — click *"Regenerate"* on Access Token again\n` +
@@ -469,13 +469,78 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
                     { parse_mode: "Markdown" }
                 );
             } catch (err: any) {
-                ctx.session.setupWizard = null;
-                await ctx.api.editMessageText(
-                    ctx.chat?.id ?? telegramId,
-                    validating.message_id,
-                    `❌ *Credential validation failed.*\n\n${err.message}\n\nDouble-check your keys and run /setup again.`,
-                    { parse_mode: "Markdown" }
-                );
+                // ── Diagnose which key pair caused the failure ─────────────
+                // X returns specific error codes inside the response body.
+                // Code 32  → "Could not authenticate you" → Consumer Key/Secret wrong
+                // Code 89  → "Invalid or expired token"   → Access Token/Secret wrong
+                // Code 215 → "Bad authentication data"    → could be either pair
+                const xCode: number | undefined =
+                    err?.data?.errors?.[0]?.code ??
+                    err?.errors?.[0]?.code ??
+                    undefined;
+                const msg: string = (err?.message ?? "").toLowerCase();
+
+                const isConsumerBad =
+                    xCode === 32 ||
+                    msg.includes("consumer") ||
+                    msg.includes("invalid api key") ||
+                    msg.includes("api key");
+
+                const isAccessBad =
+                    xCode === 89 ||
+                    xCode === 326 ||
+                    msg.includes("token") ||
+                    msg.includes("access");
+
+                if (isConsumerBad && !isAccessBad) {
+                    // Reset wizard to consumer_key step, keep access tokens intact
+                    wizard.step = "consumer_key";
+                    wizard.partial.consumer_key = undefined;
+                    wizard.partial.consumer_secret = undefined;
+                    wizard.retryMode = true;
+                    await ctx.api.editMessageText(
+                        ctx.chat?.id ?? telegramId,
+                        validating.message_id,
+                        `❌ *Consumer Key or Consumer Secret is incorrect.*\n\n` +
+                        `Your Access Token is fine — you only need to re-enter the first two keys.\n\n` +
+                        `On the X developer portal:\n` +
+                        `Open your app → *"OAuth 1.0 Keys"* section → click *"Show"*\n\n` +
+                        `👇 Re-enter your *Consumer Key* (first value):`,
+                        { parse_mode: "Markdown" }
+                    );
+                } else if (isAccessBad && !isConsumerBad) {
+                    // Reset wizard to access_token step, keep consumer keys intact
+                    wizard.step = "access_token";
+                    wizard.partial.access_token = undefined;
+                    wizard.partial.access_secret = undefined;
+                    wizard.retryMode = true;
+                    await ctx.api.editMessageText(
+                        ctx.chat?.id ?? telegramId,
+                        validating.message_id,
+                        `❌ *Access Token or Access Token Secret is incorrect.*\n\n` +
+                        `Your Consumer Key is fine — you only need to re-enter the last two keys.\n\n` +
+                        `On the X developer portal:\n` +
+                        `Open your app → scroll to *"Access Token"* → click *"Regenerate"*\n` +
+                        `Copy *both values* from the dialog before closing it.\n\n` +
+                        `👇 Re-enter your *Access Token* (first value — starts with numbers):`,
+                        { parse_mode: "Markdown" }
+                    );
+                } else {
+                    // Unknown error — drop back to start but keep nothing
+                    wizard.step = "consumer_key";
+                    wizard.partial = {};
+                    wizard.retryMode = true;
+                    await ctx.api.editMessageText(
+                        ctx.chat?.id ?? telegramId,
+                        validating.message_id,
+                        `❌ *Validation failed — ${err?.data?.errors?.[0]?.message ?? err.message}*\n\n` +
+                        `We couldn't identify which key caused the issue.\n` +
+                        `Please re-enter all 4 keys from scratch.\n\n` +
+                        `Open your app on the X developer portal → *"OAuth 1.0 Keys"* → click *"Show"*\n\n` +
+                        `👇 Re-enter your *Consumer Key*:`,
+                        { parse_mode: "Markdown" }
+                    );
+                }
             }
             break;
         }

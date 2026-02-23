@@ -36,6 +36,8 @@ export interface SetupWizardState {
         access_token?: string;
         access_secret?: string;
     };
+    /** True when the user is re-entering a specific key pair after a failed validation */
+    retryMode?: boolean;
 }
 
 export interface SessionData {
