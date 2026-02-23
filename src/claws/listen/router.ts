@@ -347,7 +347,10 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
         return;
     }
 
-    const trimmed = input.trim();
+    // Strip all non-printable / invisible Unicode characters (zero-width spaces,
+    // non-breaking spaces, RTL marks, etc.) that Telegram copy-paste injects.
+    // X keys are pure printable ASCII — anything outside 0x20–0x7E is noise.
+    const trimmed = input.replace(/[^\x20-\x7E]/g, "").trim();
     // Basic sanity check — all four X tokens are long with no spaces
     if (!trimmed || trimmed.length < 10 || trimmed.includes(" ")) {
         await ctx.reply(
@@ -420,6 +423,13 @@ async function handleSetupWizard(ctx: BotContext, input: string): Promise<void> 
             const validating = await ctx.reply("🔄 Validating credentials with X API…");
 
             try {
+                // Log sanitized key lengths so we can confirm no invisible chars crept through
+                console.log("[setup:validate] key lengths:", {
+                    consumer_key: wizard.partial.consumer_key!.length,
+                    consumer_secret: wizard.partial.consumer_secret!.length,
+                    access_token: wizard.partial.access_token!.length,
+                    access_secret: trimmed.length,
+                });
                 // Verify credentials live — v2.me() returns 401 if anything is wrong
                 const testClient = new TwitterApi({
                     appKey: wizard.partial.consumer_key!,
