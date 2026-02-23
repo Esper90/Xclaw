@@ -4,6 +4,19 @@ export interface Message {
     timestamp: number;
 }
 
+/** A mention fetched by the butler, held in session so the user can reply naturally */
+export interface PendingMention {
+    /** Display label shown to user: "A", "B", "C" … */
+    label: string;
+    id: string;
+    authorId: string;
+    authorUsername?: string;
+    /** Original mention text */
+    text: string;
+    /** AI-generated suggested reply draft */
+    suggestedReply?: string;
+}
+
 /** A DM fetched by the butler, held in session so the user can reply naturally */
 export interface PendingDM {
     /** Display label shown to user: "A", "B", "C" … */
@@ -49,6 +62,8 @@ export interface SessionData {
     heartbeatEnabled: boolean;
     /** DMs fetched in the last /dms or natural language check — cleared after replying */
     pendingDMs: PendingDM[];
+    /** Mentions fetched in the last /mentions or natural language check — cleared after replying */
+    pendingMentions: PendingMention[];
     /** Active /setup wizard state — null when no setup in progress */
     setupWizard: SetupWizardState | null;
 }

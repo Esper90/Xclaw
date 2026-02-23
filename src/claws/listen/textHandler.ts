@@ -8,7 +8,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { config } from "../../config";
 import { recordActivity } from "../sense/activityTracker";
 import { fetchMentions, fetchDMs, postButlerReply, searchDMs } from "../wire/xButler";
-import type { PendingDM } from "../connect/session";
+import type { PendingDM, PendingMention } from "../connect/session";
 
 const LABELS = "ABCDEFGHIJKLMNOP".split("");
 
@@ -96,23 +96,134 @@ async function runDMsReply(userId: string, ctx: BotContext): Promise<string> {
     return msg.trim();
 }
 
-/** Format mentions result into a clean Telegram markdown string */
-async function runMentionsReply(userId: string): Promise<string> {
+/** Format mentions result into a clean Telegram markdown string and store in session */
+async function runMentionsReply(userId: string, ctx: BotContext): Promise<string> {
     const mentions = await fetchMentions(userId, 10);
     if (mentions.length === 0) {
+        ctx.session.pendingMentions = [];
         return `📭 *No important mentions right now.* Nothing new scored high enough to surface — the butler checks automatically every 15 min.`;
     }
+
+    // Store in session with labels so user can say "reply to A"
+    ctx.session.pendingMentions = mentions.map((m, i) => ({
+        label: LABELS[i] ?? String(i + 1),
+        id: m.id,
+        authorId: m.authorId,
+        authorUsername: m.authorUsername,
+        text: m.text,
+        suggestedReply: m.suggestedReply,
+    } satisfies PendingMention));
+
     let msg = `📣 *${mentions.length} important mention${mentions.length > 1 ? "s" : ""}:*\n\n`;
-    for (const m of mentions) {
-        msg += `👤 @${m.authorUsername ?? m.authorId}\n`;
-        msg += `💬 ${m.text.slice(0, 200)}${m.text.length > 200 ? "…" : ""}\n`;
+    for (const p of ctx.session.pendingMentions) {
+        const m = mentions.find((x) => x.id === p.id)!;
+        msg += `*[${p.label}]* 👤 @${p.authorUsername ?? p.authorId}\n`;
+        msg += `💬 ${p.text.slice(0, 200)}${p.text.length > 200 ? "…" : ""}\n`;
         msg += `📊 Score: ${(m.importanceScore * 100).toFixed(0)}% | ❤️ ${m.engagement}\n`;
-        if (m.suggestedReply) {
-            msg += `💡 *Suggested:* ${m.suggestedReply.slice(0, 180)}\n`;
+        if (p.suggestedReply) {
+            msg += `💡 *Suggested:* ${p.suggestedReply.slice(0, 180)}\n`;
         }
-        msg += `🔗 https://x.com/i/status/${m.id}\n\n`;
+        msg += `🔗 https://x.com/i/status/${p.id}\n\n`;
     }
+    msg += `_Say "reply to A", "reply to all", or "reply to B but say…"_`;
     return msg.trim();
+}
+
+/**
+ * Detect if the user wants to reply to one or more pending mentions.
+ * Works identically to detectReplyIntent but is called separately so mentions
+ * and DMs don't accidentally consume each other's session state.
+ */
+async function detectMentionReplyIntent(
+    message: string,
+    pendingLabels: string[]
+): Promise<{ action: "reply" | "none"; targets: string[]; instruction?: string }> {
+    const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
+    const labelsStr = pendingLabels.join(", ");
+    const result = await model.generateContent(
+        `You are a JSON classifier. The user was just shown ${pendingLabels.length} X (Twitter) mention(s) labeled: ${labelsStr}.
+Decide if the user wants to REPLY to one or more of those mentions.
+
+REPLY examples:
+- "reply" → {"action":"reply","targets":["${pendingLabels[0] ?? "A"}"]}
+- "yeah reply to A" → {"action":"reply","targets":["A"]}
+- "reply to all" → {"action":"reply","targets":["all"]}
+- "reply to B and say thanks for that" → {"action":"reply","targets":["B"],"instruction":"say thanks for that"}
+- "can you reply to A but make it more professional" → {"action":"reply","targets":["A"],"instruction":"make it more professional"}
+- "send that reply" → {"action":"reply","targets":["all"]}
+- "go ahead" → {"action":"reply","targets":["all"]}
+- "yes send it" → {"action":"reply","targets":["all"]}
+- "reply to A and C" → {"action":"reply","targets":["A","C"]}
+
+NOT REPLY — return none:
+- general questions unrelated to replying
+- asking to check mentions again
+- asking about DMs
+
+IMPORTANT: If the user just says "reply" with no label, assume they mean the first one (${pendingLabels[0] ?? "A"}).
+
+Return ONLY valid JSON. No explanation, no markdown, no code block.
+
+Message: "${message.replace(/"/g, "'")}"` 
+    );
+
+    try {
+        const raw = result.response.text().trim().replace(/^```json\n?|```$/g, "").trim();
+        const parsed = JSON.parse(raw);
+        if (parsed.action === "reply" && Array.isArray(parsed.targets)) {
+            return {
+                action: "reply",
+                targets: (parsed.targets as string[]).map((t) => t.toUpperCase()),
+                instruction: parsed.instruction as string | undefined,
+            };
+        }
+    } catch {
+        // parse failed — fall through to none
+    }
+    return { action: "none", targets: [] };
+}
+
+/** Reply to one or more pending mentions on X. */
+async function executeMentionReply(
+    userId: string,
+    ctx: BotContext,
+    targets: string[],
+    instruction?: string
+): Promise<string> {
+    const pending = ctx.session.pendingMentions;
+    if (!pending || pending.length === 0) {
+        return `📭 No mentions loaded. Say "check my mentions" first so I can see what's there.`;
+    }
+
+    const toReply = targets[0] === "ALL"
+        ? pending
+        : pending.filter((p) => targets.includes(p.label.toUpperCase()));
+
+    if (toReply.length === 0) {
+        const available = pending.map((p) => p.label).join(", ");
+        return `❓ Couldn't find those mentions. Available: ${available}. Try "reply to ${available[0]}" or "reply to all".`;
+    }
+
+    const results: string[] = [];
+    for (const mention of toReply) {
+        const base = mention.suggestedReply ?? `Thanks for the mention!`;
+        const finalText = await buildReplyText(mention.text, base, instruction);
+
+        const replyResult = await postButlerReply(userId, mention.id, finalText, false);
+
+        if (replyResult.success) {
+            results.push(`✅ *[${mention.label}]* Replied to @${mention.authorUsername ?? mention.authorId}\n_"${finalText.slice(0, 120)}${finalText.length > 120 ? "…" : ""}"_`);
+        } else {
+            results.push(`❌ *[${mention.label}]* Failed to reply to @${mention.authorUsername ?? mention.authorId}: ${replyResult.error}`);
+        }
+    }
+
+    // Clear replied mentions from session
+    ctx.session.pendingMentions = pending.filter(
+        (p) => !toReply.some((r) => r.label === p.label)
+    );
+
+    return results.join("\n\n");
 }
 
 /**
@@ -380,6 +491,19 @@ export async function handleText(
         }
     }
 
+    // 0b2. Mention reply intent — only runs if we have pending mentions in session
+    if (ctx.session.pendingMentions?.length > 0) {
+        try {
+            const labels = ctx.session.pendingMentions.map((m) => m.label);
+            const mentionReplyIntent = await detectMentionReplyIntent(userMessage, labels);
+            if (mentionReplyIntent.action === "reply") {
+                return await executeMentionReply(userId, ctx, mentionReplyIntent.targets, mentionReplyIntent.instruction);
+            }
+        } catch (err) {
+            console.warn("[textHandler] Mention reply intent check failed:", err);
+        }
+    }
+
     // 0c. DM search intent — MUST run before general butler check.
     //     "bring up dms from sage" is a search, not a general fetch.
     //     Specific always wins over general.
@@ -399,7 +523,7 @@ export async function handleText(
             return await runDMsReply(userId, ctx);
         }
         if (butlerIntent === "mentions") {
-            return await runMentionsReply(userId);
+            return await runMentionsReply(userId, ctx);
         }
     } catch (err) {
         console.warn("[textHandler] Butler intent check failed:", err);
