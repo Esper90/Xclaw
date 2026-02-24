@@ -8,14 +8,18 @@ import { registry, McpTool } from "./registry";
 const fetchXProfileTool: McpTool = {
     name: "fetch_x_profile",
     description: "Look up an X (Twitter) user by handle to get their bio, follower count, and recent tweets. Default to Lite mode (useCache=true, tweetCount=5) to save user costs.",
-    execute: async (args: { handle: string, useCache?: boolean, tweetCount?: number, userId: string }) => {
+    execute: async (args: { handle: string, useCache?: boolean, tweetCount?: number, confirmed?: boolean, userId: string }) => {
         if (!args.handle || !args.userId) {
             return "Error: handle and userId are required.";
         }
 
-        // Apply Cost-Protecting Defaults
         const useCache = args.useCache !== undefined ? args.useCache : true;
         const requestedCount = args.tweetCount && args.tweetCount > 0 ? args.tweetCount : 5;
+
+        // WALLET GUARD: If deep dive (live or > 5 tweets) requested without confirmed=true
+        if ((!useCache || requestedCount > 5) && !args.confirmed) {
+            return `[WALLET PROTECTOR]: You are attempting a 'Deep Dive' or 'Fresh' lookup for @${args.handle}. This action has a financial cost (~$0.16) or high quota usage. You MUST pause, inform the user of the cost, and ask for their confirmation (e.g. "Do you want to proceed with the $0.16 deep dive?"). ONLY if they say YES can you call this tool again with confirmed=true.`;
+        }
         // Hard limit to 30 tweets to physically prevent $0.50 runaway calls
         const finalCount = Math.min(requestedCount, 30);
 
@@ -51,6 +55,7 @@ const fetchXProfileTool: McpTool = {
                 handle: { type: SchemaType.STRING, description: "The X handle to look up (e.g. '@elonmusk' or 'elonmusk')." },
                 useCache: { type: SchemaType.BOOLEAN, description: "Set to false ONLY if the user explicitly demands 'fresh' data and has approved the ~$0.16 cost. Otherwise, leave true or undefined." },
                 tweetCount: { type: SchemaType.INTEGER, description: "How many tweets to fetch. Default is 5. Max allowed is 30. Only increase if user asks for a 'deep dive'. Every 5 tweets adds ~$0.025 to their cost." },
+                confirmed: { type: SchemaType.BOOLEAN, description: "MUST be set to true IF you have already asked the user for permission to spend ~$0.16 and they said YES. If you haven't asked yet, leave this false and the tool will refuse to execute high-cost requests." },
                 userId: { type: SchemaType.STRING, description: "The Telegram user ID of the current user." }
             },
             required: ["handle", "userId"]
