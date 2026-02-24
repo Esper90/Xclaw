@@ -63,6 +63,81 @@ export async function postTweet(
 }
 
 /**
+ * Quote Tweet a specific tweet.
+ */
+export async function quoteTweet(
+    text: string,
+    quoteTweetId: string,
+    telegramId?: string | number
+): Promise<string> {
+    try {
+        const client = telegramId
+            ? await getUserXClient(telegramId)
+            : await getLegacyClient();
+        console.log(`[X] Attempting to quote tweet ${quoteTweetId}: "${text.substring(0, 50)}..."`);
+
+        const parameters: any = {
+            text,
+            quote_tweet_id: quoteTweetId,
+        };
+        const { data: createdTweet } = await client.v2.tweet(parameters);
+
+        console.log(`[X] Quote tweet posted successfully! ID: ${createdTweet.id}`);
+        return createdTweet.id;
+    } catch (error: any) {
+        console.error("[X] Failed to quote tweet:", error);
+        throw new Error(`X API Error: ${error.message || "Unknown error"}`);
+    }
+}
+
+/**
+ * Interact with a tweet (Like or Retweet).
+ */
+export async function interactWithTweet(
+    tweetId: string,
+    action: "like" | "retweet",
+    telegramId: string | number
+): Promise<void> {
+    try {
+        const client = await getUserXClient(telegramId);
+
+        // Fetch the user's numeric X ID required by the v2 interaction endpoints
+        const me = await client.v2.me();
+        const xUserId = me.data.id;
+
+        console.log(`[X] Attempting to ${action} tweet ${tweetId} for user ${xUserId}`);
+
+        if (action === "like") {
+            await client.v2.like(xUserId, tweetId);
+        } else if (action === "retweet") {
+            await client.v2.retweet(xUserId, tweetId);
+        }
+        console.log(`[X] ${action} successful for tweet ${tweetId}`);
+    } catch (error: any) {
+        console.error(`[X] Failed to ${action} tweet:`, error);
+        throw new Error(`X API Error: ${error.message || "Unknown error"}`);
+    }
+}
+
+/**
+ * Delete a tweet.
+ */
+export async function deleteTweet(
+    tweetId: string,
+    telegramId: string | number
+): Promise<void> {
+    try {
+        const client = await getUserXClient(telegramId);
+        console.log(`[X] Attempting to delete tweet ${tweetId}`);
+        await client.v2.deleteTweet(tweetId);
+        console.log(`[X] Tweet ${tweetId} deleted successfully`);
+    } catch (error: any) {
+        console.error("[X] Failed to delete tweet:", error);
+        throw new Error(`X API Error: ${error.message || "Unknown error"}`);
+    }
+}
+
+/**
  * Downloads a file from Telegram using its file_id, uploads it to X's v1.1 Media API, 
  * and returns the X media_id for use in a v2 tweet.
  */
