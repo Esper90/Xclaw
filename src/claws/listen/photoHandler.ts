@@ -6,6 +6,8 @@ import { describePhotoForMemory } from "../sense/photo";
 import { upsertMemory } from "../archive/pinecone";
 import { config } from "../../config";
 import { recordActivity } from "../sense/activityTracker";
+import { handleText } from "./textHandler";
+import { recordInteraction } from "../archive/buffer";
 
 const DOWNLOADS_DIR = path.join(os.tmpdir(), "gc-photo");
 
@@ -75,12 +77,14 @@ export async function handlePhoto(ctx: BotContext): Promise<void> {
             fileId: largestPhoto.file_id
         });
 
-        // 5. Update user
-        const snippet = description.slice(0, 150) + (description.length > 150 ? "..." : "");
+        // 5. Trigger proactive AI reaction
+        const syntheticTrigger = `[SYSTEM_EVENT]: User uploaded a photo. fileId: ${largestPhoto.file_id}. Description: ${description}`;
+        const aiReply = await handleText(ctx, syntheticTrigger);
+
         await ctx.api.editMessageText(
             ctx.chat!.id,
             processingMsg.message_id,
-            `✅ *Memeory Stored:* I analyzed and saved this photo to your long-term memory.\n\n_What I saw: ${snippet}_`,
+            aiReply,
             { parse_mode: "Markdown" }
         );
 

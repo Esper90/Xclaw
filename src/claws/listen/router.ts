@@ -239,6 +239,9 @@ ${dmLines.join("\n") || "No new DMs."}`;
                 parse_mode: "Markdown"
             });
 
+            // Record interaction
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/briefing`, `🎙️ Briefing prepared: "${script}"`);
+
             // Cleanup
             await ctx.api.deleteMessage(ctx.chat.id, waitMsg.message_id);
             const fs = await import("fs");
@@ -424,10 +427,14 @@ ${buffer.join("\n")}`;
         const arg = ctx.match?.trim().toLowerCase();
         if (arg === "on") {
             ctx.session.voiceEnabled = true;
-            await ctx.reply("🔊 Voice replies enabled. I'll respond with audio.");
+            const msg = "🔊 Voice replies enabled. I'll respond with audio.";
+            await ctx.reply(msg);
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/voice on`, msg);
         } else if (arg === "off") {
             ctx.session.voiceEnabled = false;
-            await ctx.reply("🔇 Voice replies disabled. Text-only mode.");
+            const msg = "🔇 Voice replies disabled. Text-only mode.";
+            await ctx.reply(msg);
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/voice off`, msg);
         } else {
             const status = ctx.session.voiceEnabled ? "on" : "off";
             await ctx.reply(`Voice is currently *${status}*. Use /voice on or /voice off.`, {
@@ -444,11 +451,15 @@ ${buffer.join("\n")}`;
         if (arg === "on") {
             ctx.session.heartbeatEnabled = true;
             registerHeartbeat(userId, chatId);
-            await ctx.reply("💡 Heartbeat enabled. I'll check in with you proactively.");
+            const msg = "💡 Heartbeat enabled. I'll check in with you proactively.";
+            await ctx.reply(msg);
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/heartbeat on`, msg);
         } else if (arg === "off") {
             ctx.session.heartbeatEnabled = false;
             unregisterHeartbeat(userId);
-            await ctx.reply("🔕 Heartbeat disabled.");
+            const msg = "🔕 Heartbeat disabled.";
+            await ctx.reply(msg);
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/heartbeat off`, msg);
         } else {
             const status = ctx.session.heartbeatEnabled ? "on" : "off";
             await ctx.reply(
@@ -497,10 +508,14 @@ ${buffer.join("\n")}`;
         const arg = ctx.match?.trim().toLowerCase();
         if (arg === "on") {
             ctx.session.braindumpMode = true;
-            await ctx.reply("🧠 *Brain Dump Mode: ON*\n\nSend voice notes. I will transcribe them and save them to your long-term memory, but I will *not* reply or try to converse.\n(Use `/braindump off` to return to normal)", { parse_mode: "Markdown" });
+            const msg = "🧠 *Brain Dump Mode: ON*\n\nSend voice notes. I will transcribe them and save them to your long-term memory, but I will *not* reply or try to converse.\n(Use `/braindump off` to return to normal)";
+            await ctx.reply(msg, { parse_mode: "Markdown" });
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/braindump on`, msg);
         } else if (arg === "off") {
             ctx.session.braindumpMode = false;
-            await ctx.reply("🧠 Brain Dump Mode: OFF. Normal conversational AI resumed.");
+            const msg = "🧠 Brain Dump Mode: OFF. Normal conversational AI resumed.";
+            await ctx.reply(msg);
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/braindump off`, msg);
         } else {
             const status = ctx.session.braindumpMode ? "on" : "off";
             await ctx.reply(`Brain Dump is currently *${status}*. Use \`/braindump on\` or \`/braindump off\`.\n\n_When ON, your voice notes are silently transcribed and memorized without me replying._`, { parse_mode: "Markdown" });
@@ -539,7 +554,9 @@ ${buffer.join("\n")}`;
         const ms = unit === "h" ? value * 60 * 60 * 1000 : value * 60 * 1000;
 
         ctx.session.silencedUntil = Date.now() + ms;
-        await ctx.reply(`🤫 *Emergency Brake Pulled*\n\nQuiet mode engaged for ${value}${unit}. I won't send you any proactive messages or DMs until then.`, { parse_mode: "Markdown" });
+        const msg = `🤫 *Emergency Brake Pulled*\n\nQuiet mode engaged for ${value}${unit}. I won't send you any proactive messages or DMs until then.`;
+        await ctx.reply(msg, { parse_mode: "Markdown" });
+        ctx.session.buffer = recordInteraction(ctx.session.buffer, `/silence ${arg}`, msg);
     });
 
     bot.command("forget", async (ctx) => {
@@ -574,6 +591,7 @@ ${buffer.join("\n")}`;
     // ── /setup — X credential onboarding wizard ──────────────────────────────
     bot.command("setup", async (ctx) => {
         ctx.session.setupWizard = { step: "consumer_key", partial: {} };
+        const msg = `🔑 *Connect your X account to Xclaw*\n\nWe need 4 keys... [Wizard Started]`; // Shortened for log
         await ctx.reply(
             `🔑 *Connect your X account to Xclaw*\n\n` +
             `We need 4 keys from the X Developer Portal.\n` +
@@ -601,6 +619,7 @@ ${buffer.join("\n")}`;
             `👇 Paste the *Consumer Key* (first value) here:`,
             { parse_mode: "Markdown", link_preview_options: { is_disabled: true } }
         );
+        ctx.session.buffer = recordInteraction(ctx.session.buffer, `/setup`, `[X Auth Setup Wizard Started]`);
     });
 
     // ── /deletekeys — remove stored X credentials ─────────────────────────────
