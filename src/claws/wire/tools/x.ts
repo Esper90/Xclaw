@@ -34,6 +34,16 @@ const publishTweetTool: McpTool = {
                 }, `${args.userId}-my_tweet-${tweetId}`);
             }
 
+            // Send standard Undo Grace Period button if context is available
+            const ctx: any = context?.ctx;
+            if (ctx) {
+                await ctx.reply(`✅ The tweet is live! You have a 60-second grace period to undo it.\n\nhttps://x.com/i/status/${tweetId}`, {
+                    reply_markup: {
+                        inline_keyboard: [[{ text: "🗑️ Undo Post", callback_data: `delete_tweet:${tweetId}` }]]
+                    }
+                });
+            }
+
             return `✅ Tweet published successfully! View on X: https://x.com/i/status/${tweetId}`;
         } catch (err: any) {
             return `❌ Failed to publish tweet: ${err.message}`;

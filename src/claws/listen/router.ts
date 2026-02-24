@@ -638,6 +638,38 @@ ${buffer.join("\n")}`;
         }
     });
 
+    // ── Callback Queries (Inline Buttons) ──────────────────────────────────────
+    bot.on("callback_query:data", async (ctx) => {
+        const data = ctx.callbackQuery.data;
+        const telegramId = String(ctx.from.id);
+
+        if (data.startsWith("delete_tweet:")) {
+            const tweetId = data.split(":")[1];
+            try {
+                // Dynamically import to avoid circular dependencies if any
+                const { deleteTweet } = await import("../wire/xService");
+                const { deleteMemory } = await import("../archive/pinecone");
+
+                await deleteTweet(tweetId, telegramId);
+
+                try {
+                    await deleteMemory(telegramId, [`${telegramId}-my_tweet-${tweetId}`]);
+                } catch (e) { /* ignore memory delete err */ }
+
+                await ctx.answerCallbackQuery({ text: "✅ Tweet deleted successfully!" });
+
+                // Edit the original message to remove the button and strikethrough the text
+                const originalText = ctx.callbackQuery.message?.text || "Tweet deleted.";
+                await ctx.editMessageText(`~~${originalText}~~\n\n*(🗑 Undo successful)*`, { parse_mode: "Markdown" });
+            } catch (err: any) {
+                console.error("[router] Undo tweet failed:", err);
+                await ctx.answerCallbackQuery({ text: `❌ Failed to delete: ${err.message}`, show_alert: true });
+            }
+        } else {
+            await ctx.answerCallbackQuery(); // acknowledge unknown
+        }
+    });
+
     // ── Voice / Audio messages ─────────────────────────────────────────────────
     bot.on("message:voice", handleVoice);
     bot.on("message:audio", handleVoice);

@@ -1,6 +1,6 @@
 import { SchemaType } from "@google/generative-ai";
 import { deleteTweet } from "../xService";
-import { forgetMemory } from "../../archive/pinecone";
+import { deleteMemory } from "../../archive/pinecone";
 import { registry, McpTool } from "./registry";
 
 /**
@@ -16,10 +16,9 @@ const deleteTweetTool: McpTool = {
 
         try {
             await deleteTweet(args.tweetId, args.userId);
-
             // Try to remove it from memory if we added it
             try {
-                await forgetMemory(args.userId, `[System: Direct ID deletion]`, `${args.userId}-my_tweet-${args.tweetId}`);
+                await deleteMemory(args.userId, [`${args.userId}-my_tweet-${args.tweetId}`]);
             } catch (ignore) {
                 // It might not be in memory, that's fine
             }
