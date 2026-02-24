@@ -2,6 +2,7 @@ import type { BotContext } from "../connect/bot";
 import { handleText } from "./textHandler";
 import { handleVoice } from "./voiceHandler";
 import { handlePhoto } from "./photoHandler";
+import { handleDocument } from "./documentHandler";
 import { registerHeartbeat, unregisterHeartbeat } from "../sense/heartbeat";
 import { queryMemory, forgetMemory, upsertMemory } from "../archive/pinecone";
 import { postTweet } from "../wire/xService";
@@ -643,6 +644,9 @@ ${buffer.join("\n")}`;
 
     // ── Photos / Image messages ────────────────────────────────────────────────
     bot.on("message:photo", handlePhoto);
+
+    // ── Document / File messages ───────────────────────────────────────────────
+    bot.on("message:document", handleDocument);
 
     // ── Text messages ─────────────────────────────────────────────────────────
     bot.on("message:text", async (ctx) => {
