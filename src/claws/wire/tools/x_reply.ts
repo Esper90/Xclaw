@@ -15,7 +15,7 @@ const replyToMentionTool: McpTool = {
         try {
             const result = await postButlerReply(args.userId, args.tweetId, args.text, false);
             if (!result.success) return `❌ Failed to reply: ${result.error}`;
-            return "✅ Reply to mention posted successfully.";
+            return `✅ Reply to mention posted successfully. View on X: https://x.com/i/status/${result.resultId}`;
         } catch (err: any) {
             return `❌ Exception while replying: ${err.message}`;
         }

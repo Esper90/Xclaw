@@ -34,7 +34,7 @@ const publishTweetTool: McpTool = {
                 }, `${args.userId}-my_tweet-${tweetId}`);
             }
 
-            return `✅ Tweet published successfully! ID: ${tweetId}`;
+            return `✅ Tweet published successfully! View on X: https://x.com/i/status/${tweetId}`;
         } catch (err: any) {
             return `❌ Failed to publish tweet: ${err.message}`;
         }
