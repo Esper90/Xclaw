@@ -17,6 +17,7 @@ import "./claws/wire/tools/thread";
 import "./claws/wire/tools/telegram_media";
 import "./claws/wire/tools/x_interact";
 import "./claws/wire/tools/x_delete";
+import "./claws/wire/tools/x_profile";
 
 import { bot, sessionMap } from "./claws/connect/bot";
 import { authMiddleware } from "./claws/connect/auth";

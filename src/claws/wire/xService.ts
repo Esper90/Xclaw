@@ -138,6 +138,73 @@ export async function deleteTweet(
 }
 
 /**
+ * Fetch an X User's Profile and their recent tweets.
+ * Includes caching checks to avoid duplicate billing.
+ */
+export async function fetchXProfile(
+    handle: string,
+    maxResults: number = 5,
+    useCache: boolean = true,
+    telegramId: string | number
+): Promise<{ profile: any, tweets: any[], source: "cache" | "api" }> {
+    const normalizedHandle = handle.replace("@", "");
+
+    // Attempt dynamic import to avoid circular dependency
+    const { getCachedProfile, setCachedProfile } = await import("../../db/xCacheStore");
+
+    if (useCache) {
+        const cached = await getCachedProfile(normalizedHandle);
+        if (cached) {
+            console.log(`[X] Found cached profile for @${normalizedHandle}`);
+            return {
+                profile: cached.profile_data,
+                tweets: cached.tweets_data.slice(0, maxResults),
+                source: "cache"
+            };
+        }
+    }
+
+    try {
+        const client = await getUserXClient(telegramId);
+        console.log(`[X] Fetching fresh profile data for @${normalizedHandle}`);
+
+        // 1. Get User ID by handle
+        const userRes = await client.v2.userByUsername(normalizedHandle, {
+            "user.fields": ["description", "public_metrics", "created_at", "location", "verified"]
+        });
+
+        if (!userRes.data) {
+            throw new Error(`User @${normalizedHandle} not found on X.`);
+        }
+
+        const xUserId = userRes.data.id;
+
+        // 2. Fetch their recent timeline
+        // Max limit hardcoded in the API call to never exceed 30 even if AI tries to request 100
+        const fetchLimit = Math.min(Math.max(5, maxResults), 30);
+        const timelineRes = await client.v2.userTimeline(xUserId, {
+            max_results: fetchLimit,
+            "tweet.fields": ["created_at", "public_metrics", "text"],
+            exclude: ["retweets", "replies"] // typically want their original thoughts
+        });
+
+        const tweets = timelineRes.data.data || [];
+
+        // 3. Save to Cache
+        await setCachedProfile(normalizedHandle, userRes.data, tweets);
+
+        return {
+            profile: userRes.data,
+            tweets: tweets,
+            source: "api"
+        };
+    } catch (error: any) {
+        console.error(`[X] Failed to fetch profile for @${normalizedHandle}:`, error);
+        throw new Error(`X API Error: ${error.message || "Unknown error"}`);
+    }
+}
+
+/**
  * Downloads a file from Telegram using its file_id, uploads it to X's v1.1 Media API, 
  * and returns the X media_id for use in a v2 tweet.
  */
