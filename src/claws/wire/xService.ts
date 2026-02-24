@@ -138,6 +138,22 @@ export async function deleteTweet(
 }
 
 /**
+ * Helper to extract a clean handle from a URL or @ mention
+ */
+function cleanXHandle(input: string): string {
+    let cleaned = input.trim();
+    if (cleaned.includes("x.com/")) {
+        cleaned = cleaned.split("x.com/")[1];
+    } else if (cleaned.includes("twitter.com/")) {
+        cleaned = cleaned.split("twitter.com/")[1];
+    }
+    // Remove query params or trailing paths
+    cleaned = cleaned.split("/")[0].split("?")[0];
+    cleaned = cleaned.replace(/^@/, "");
+    return cleaned;
+}
+
+/**
  * Fetch an X User's Profile and their recent tweets.
  * Includes caching checks to avoid duplicate billing.
  */
@@ -147,7 +163,8 @@ export async function fetchXProfile(
     useCache: boolean = true,
     telegramId: string | number
 ): Promise<{ profile: any, tweets: any[], source: "cache" | "api" }> {
-    const normalizedHandle = handle.replace("@", "");
+    const limit = Math.min(Math.max(5, maxResults), 30);
+    const normalizedHandle = cleanXHandle(handle);
 
     // Attempt dynamic import to avoid circular dependency
     const { getCachedProfile, setCachedProfile } = await import("../../db/xCacheStore");
@@ -155,12 +172,18 @@ export async function fetchXProfile(
     if (useCache) {
         const cached = await getCachedProfile(normalizedHandle);
         if (cached) {
-            console.log(`[X] Found cached profile for @${normalizedHandle}`);
-            return {
-                profile: cached.profile_data,
-                tweets: cached.tweets_data.slice(0, maxResults),
-                source: "cache"
-            };
+            // Check if cache has enough data, OR if we previously requested this many or more
+            const cachedLimit = cached.profile_data._fetch_limit || cached.tweets_data.length;
+            if (cachedLimit >= limit || cached.tweets_data.length >= limit) {
+                console.log(`[X] Found sufficient cached profile for @${normalizedHandle}`);
+                return {
+                    profile: cached.profile_data,
+                    tweets: cached.tweets_data.slice(0, limit),
+                    source: "cache"
+                };
+            } else {
+                console.log(`[X] Cache for @${normalizedHandle} has ${cachedLimit} tweets, but ${limit} requested. Bypassing cache to fetch deep dive.`);
+            }
         }
     }
 
@@ -180,17 +203,16 @@ export async function fetchXProfile(
         const xUserId = userRes.data.id;
 
         // 2. Fetch their recent timeline
-        // Max limit hardcoded in the API call to never exceed 30 even if AI tries to request 100
-        const fetchLimit = Math.min(Math.max(5, maxResults), 30);
         const timelineRes = await client.v2.userTimeline(xUserId, {
-            max_results: fetchLimit,
+            max_results: limit,
             "tweet.fields": ["created_at", "public_metrics", "text"],
             exclude: ["retweets", "replies"] // typically want their original thoughts
         });
 
         const tweets = timelineRes.data.data || [];
 
-        // 3. Save to Cache
+        // 3. Save to Cache with the requested limit embedded
+        userRes.data._fetch_limit = limit;
         await setCachedProfile(normalizedHandle, userRes.data, tweets);
 
         return {
