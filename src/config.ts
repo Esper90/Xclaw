@@ -10,7 +10,7 @@ const schema = z.object({
 
     // Gemini
     GEMINI_API_KEY: z.string().min(10, "GEMINI_API_KEY is required"),
-    GEMINI_MODEL: z.string().default("gemini-2.0-flash"),
+    GEMINI_MODEL: z.string().default("gemini-3-flash-preview"),
     GEMINI_EMBEDDING_MODEL: z.string().default("text-embedding-004"),
 
     // Pinecone
