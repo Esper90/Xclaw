@@ -7,7 +7,8 @@ import { registry, McpTool } from "./registry";
 const toggleThreadModeTool: McpTool = {
     name: "toggle_thread_mode",
     description: "Enable or disable thread-building mode. When ON, subsequent user messages (text or voice) are accumulated into a draft buffer instead of being replied to individually. Use this when the user says they want to 'write a thread' or has 'more ideas' for a post. Once enough ideas are collected, the user (or you) can trigger the final compilation.",
-    execute: async (args: { on: boolean }, { ctx }) => {
+    execute: async (args: { on: boolean }, context?: any) => {
+        const ctx = context?.ctx;
         if (!ctx) return "❌ Internal Error: Telegram context missing.";
 
         ctx.session.threadMode = args.on;
