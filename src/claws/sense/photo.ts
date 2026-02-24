@@ -12,7 +12,7 @@ export async function describePhotoForMemory(
     mimeType: string,
     userCaption?: string
 ): Promise<string> {
-    const model = ai.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+    const model = ai.getGenerativeModel({ model: config.GEMINI_MODEL });
 
     const prompt =
         `You are the vision module for a personal AI assistant. 
