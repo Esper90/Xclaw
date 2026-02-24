@@ -14,6 +14,7 @@ import { config } from "../../config";
 import { synthesizeToFile } from "../sense/tts";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { InputFile } from "grammy";
+import { recordInteraction } from "../archive/buffer";
 
 const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
 
@@ -112,6 +113,9 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
                 message.trim(),
                 { parse_mode: "Markdown" }
             );
+
+            // Record interaction for AI background context
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/mentions`, message.trim());
         } catch (err: any) {
             console.error("[router] /mentions failed:", err);
             await ctx.api.editMessageText(
@@ -169,6 +173,9 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
                 message.trim(),
                 { parse_mode: "Markdown" }
             );
+
+            // Record interaction for AI background context
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/dms`, message.trim());
         } catch (err: any) {
             console.error("[router] /dms failed:", err);
             await ctx.api.editMessageText(
@@ -384,12 +391,16 @@ ${buffer.join("\n")}`;
                 }, `${userId}-my_tweet-${tweetId}`);
             }
 
+            const successMsg = `✅ *Tweet posted!*\n\nID: \`${tweetId}\`\nhttps://x.com/i/status/${tweetId}`;
             await ctx.api.editMessageText(
                 ctx.chat.id,
                 waitMsg.message_id,
-                `✅ *Tweet posted!*\n\nID: \`${tweetId}\`\nhttps://x.com/i/status/${tweetId}`,
+                successMsg,
                 { parse_mode: "Markdown" }
             );
+
+            // Record interaction for AI background context
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/post ${text}`, successMsg);
         } catch (err: any) {
             console.error("[router] /post failed:", err);
             await ctx.api.editMessageText(
@@ -461,10 +472,14 @@ ${buffer.join("\n")}`;
                 .map((r, i) => `*${i + 1}.* (${(r.score * 100).toFixed(0)}%) ${r.text}`)
                 .join("\n\n");
 
+            const response = `🧠 *Memories for: "${query}"*\n\n${formatted || "No confident matches found."}`;
             await ctx.reply(
-                `🧠 *Memories for: "${query}"*\n\n${formatted || "No confident matches found."}`,
+                response,
                 { parse_mode: "Markdown" }
             );
+
+            // Record interaction for AI background context
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/memory ${query}`, response);
         } catch (err) {
             await ctx.reply("❌ Memory search failed. Please try again.");
         }

@@ -23,3 +23,11 @@ export function bufferToHistory(buffer: Message[]): Content[] {
         parts: [{ text: m.content }],
     }));
 }
+/**
+ * Shortcut to record a full user-bot exchange (e.g. for commands) in the buffer.
+ */
+export function recordInteraction(buffer: Message[], userContent: string, modelContent: string): Message[] {
+    let updated = addToBuffer(buffer, "user", userContent);
+    updated = addToBuffer(updated, "model", modelContent);
+    return updated;
+}
