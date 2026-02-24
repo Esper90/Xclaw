@@ -58,6 +58,8 @@ export interface SessionData {
     buffer: Message[];
     /** Whether to reply with a voice note */
     voiceEnabled: boolean;
+    /** For Settings Menu inputs */
+    awaitingSettingInput?: "timezone" | "dm_allowlist" | "mention_allowlist";
     /** Whether to receive proactive heartbeat messages */
     heartbeatEnabled: boolean;
     /** Whether voice inputs should be transcribed and saved without an AI reply */

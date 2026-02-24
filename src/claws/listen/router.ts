@@ -1,5 +1,6 @@
 import type { BotContext } from "../connect/bot";
 import { handleText } from "./textHandler";
+import { handleSettingsCommand, handleSettingsCallback, handleSettingTextInput } from "./settingsHandler.js";
 import { handleVoice } from "./voiceHandler";
 import { handlePhoto } from "./photoHandler";
 import { handleDocument } from "./documentHandler";
@@ -43,10 +44,13 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `/voice on|off — Toggle voice replies\n` +
             `/heartbeat on|off — Toggle proactive check-ins\n` +
             `/silence <dur> — Pause proactive messages\n` +
+            `/settings — Open comprehensive settings menu\n` +
             `/help — Show this message`,
             { parse_mode: "Markdown" }
         );
     });
+
+    bot.command("settings", handleSettingsCommand);
 
     bot.command("help", async (ctx) => {
         await ctx.reply(
@@ -643,6 +647,11 @@ ${buffer.join("\n")}`;
         const data = ctx.callbackQuery.data;
         const telegramId = String(ctx.from.id);
 
+        if (data.startsWith("settings:")) {
+            await handleSettingsCallback(ctx, data);
+            return;
+        }
+
         if (data.startsWith("delete_tweet:")) {
             const tweetId = data.split(":")[1];
             try {
@@ -689,6 +698,12 @@ ${buffer.join("\n")}`;
         if (ctx.session.setupWizard) {
             await handleSetupWizard(ctx, userMessage);
             return;
+        }
+
+        // Settings intercept — handle text inputs like timezones
+        if (ctx.session.awaitingSettingInput) {
+            const handled = await handleSettingTextInput(ctx, userMessage);
+            if (handled) return;
         }
 
         // Show typing indicator

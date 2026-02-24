@@ -25,6 +25,13 @@ export function unregisterHeartbeat(userId: string): void {
 }
 
 /**
+ * Check if a user has heartbeat enabled.
+ */
+export function hasHeartbeatSettings(userId: string): boolean {
+    return heartbeatRegistry.has(userId);
+}
+
+/**
  * Generate a proactive heartbeat message for a user.
  */
 async function generateHeartbeatMessage(userId: string): Promise<string> {
