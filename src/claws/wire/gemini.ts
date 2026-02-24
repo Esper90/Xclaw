@@ -21,7 +21,7 @@ export async function generateReply(
     tools?: FunctionDeclarationsTool[],
     dispatchTool?: (name: string, args: Record<string, unknown>, context?: Record<string, unknown>) => Promise<string>,
     context?: Record<string, unknown>,
-    maxToolTurns: number = 5
+    maxToolTurns: number = 10
 ): Promise<GeminiReply> {
     const model = genAI.getGenerativeModel({
         model: config.GEMINI_MODEL,
@@ -45,6 +45,8 @@ export async function generateReply(
         if (!functionCalls || functionCalls.length === 0) {
             return { text: textPart || "" };
         }
+
+        console.log(`[gemini] Turn ${turns}/${maxToolTurns} | Tools: ${functionCalls.map(f => f.name).join(", ")}`);
 
         // If we have tool calls but no dispatcher was provided (legacy route), just return text
         if (!dispatchTool) {
