@@ -93,12 +93,24 @@ export async function handleDocument(ctx: BotContext): Promise<void> {
         const syntheticTrigger = `[SYSTEM_EVENT]: User uploaded a document named "${fileName}". fileId: ${document.file_id}. Summary of contents: ${summary}`;
         const aiReply = await handleText(ctx, syntheticTrigger);
 
-        await ctx.api.editMessageText(
-            ctx.chat!.id,
-            processingMsg.message_id,
-            aiReply,
-            { parse_mode: "Markdown" }
-        );
+        try {
+            await ctx.api.editMessageText(
+                ctx.chat!.id,
+                processingMsg.message_id,
+                aiReply,
+                { parse_mode: "Markdown" }
+            );
+        } catch (editErr) {
+            try {
+                await ctx.api.editMessageText(
+                    ctx.chat!.id,
+                    processingMsg.message_id,
+                    aiReply
+                );
+            } catch (rawErr) {
+                await ctx.reply(aiReply).catch(() => { });
+            }
+        }
 
     } catch (err) {
         console.error(`[documentHandler] Error:`, err);

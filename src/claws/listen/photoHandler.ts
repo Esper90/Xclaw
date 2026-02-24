@@ -85,12 +85,24 @@ export async function handlePhoto(ctx: BotContext): Promise<void> {
         const aiReply = await handleText(ctx, syntheticTrigger);
         console.log(`[photoHandler] handleText finished. Updating Telegram message...`);
 
-        await ctx.api.editMessageText(
-            ctx.chat!.id,
-            processingMsg.message_id,
-            aiReply,
-            { parse_mode: "Markdown" }
-        );
+        try {
+            await ctx.api.editMessageText(
+                ctx.chat!.id,
+                processingMsg.message_id,
+                aiReply,
+                { parse_mode: "Markdown" }
+            );
+        } catch (editErr) {
+            try {
+                await ctx.api.editMessageText(
+                    ctx.chat!.id,
+                    processingMsg.message_id,
+                    aiReply
+                );
+            } catch (rawErr) {
+                await ctx.reply(aiReply).catch(() => { });
+            }
+        }
 
     } catch (err) {
         console.error(`[photoHandler] Error:`, err);

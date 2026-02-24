@@ -711,7 +711,12 @@ ${buffer.join("\n")}`;
 
         try {
             const reply = await handleText(ctx, userMessage);
-            await ctx.reply(reply, { parse_mode: "Markdown" });
+            try {
+                await ctx.reply(reply, { parse_mode: "Markdown" });
+            } catch (parseErr) {
+                console.warn("[router] Markdown parse failed. Falling back to plain text.");
+                await ctx.reply(reply);
+            }
         } catch (err) {
             console.error("[router] Text handler error:", err);
             await ctx.reply("❌ Something went wrong. Please try again.");
