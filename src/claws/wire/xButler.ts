@@ -360,10 +360,6 @@ export async function fetchDMs(
         "user.fields": ["username", "verified"],
     };
 
-    if (since) {
-        params.start_time = new Date(since).toISOString();
-    }
-
     let events: LocalDMEvent[] = [];
     let usersMap: Map<string, UserV2> = new Map();
 
@@ -371,7 +367,14 @@ export async function fetchDMs(
         // GET /2/dm_events — returns a FullDMTimelineV2Paginator
         const dmTimeline = await client.v2.listDmEvents(params as any);
         // .events is the typed getter on DMTimelineV2Paginator
-        const firstPageEvents = (dmTimeline.events ?? []) as LocalDMEvent[];
+        let firstPageEvents = (dmTimeline.events ?? []) as LocalDMEvent[];
+
+        // Ensure client-side filtering since DM API doesn't support start_time
+        if (since) {
+            const sinceTime = new Date(since).getTime();
+            firstPageEvents = firstPageEvents.filter(e => e.created_at && new Date(e.created_at).getTime() >= sinceTime);
+        }
+
         events.push(...firstPageEvents);
 
         // Step 1: build usersMap from the expansion (raw .data.includes.users is the
@@ -393,7 +396,11 @@ export async function fetchDMs(
                     ...params,
                     pagination_token: nextToken,
                 } as any);
-                const nextEvents = (nextPage.events ?? []) as LocalDMEvent[];
+                let nextEvents = (nextPage.events ?? []) as LocalDMEvent[];
+                if (since) {
+                    const sinceTime = new Date(since).getTime();
+                    nextEvents = nextEvents.filter(e => e.created_at && new Date(e.created_at).getTime() >= sinceTime);
+                }
                 events.push(...nextEvents);
                 const nextRaw = (nextPage as any).data as { includes?: { users?: UserV2[] }; meta?: { next_token?: string } } | undefined;
                 for (const u of nextRaw?.includes?.users ?? []) usersMap.set(u.id, u);
