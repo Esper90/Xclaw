@@ -647,8 +647,8 @@ ${buffer.join("\n")}`;
             const tweetId = data.split(":")[1];
             try {
                 // Dynamically import to avoid circular dependencies if any
-                const { deleteTweet } = await import("../wire/xService");
-                const { deleteMemory } = await import("../archive/pinecone");
+                const { deleteTweet } = await import("../wire/xService.js");
+                const { deleteMemory } = await import("../archive/pinecone.js");
 
                 await deleteTweet(tweetId, telegramId);
 

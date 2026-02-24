@@ -9,8 +9,8 @@ import { upsertMemory } from "../../archive/pinecone";
  */
 const publishTweetTool: McpTool = {
     name: "publish_tweet",
-    description: "Publish a tweet to X (Twitter). Use this ONLY when the user explicitly confirms they want to post a specific draft. Suggest a draft first and wait for approval. Can optionally attach an old photo if a mediaFileId is provided.",
-    execute: async (args: { text: string, userId: string, mediaFileId?: string }) => {
+    description: "Publish a new text tweet to X (Twitter). User approval is strictly required before publishing.",
+    execute: async (args: { text: string, userId: string, mediaFileId?: string }, context?: any) => {
         if (!args.text) return "Error: No tweet text provided.";
         if (!args.userId) return "Error: No userId provided in context.";
 

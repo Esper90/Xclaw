@@ -9,7 +9,7 @@ import { upsertMemory } from "../../archive/pinecone";
 const quoteTweetTool: McpTool = {
     name: "quote_tweet",
     description: "Quote Tweet another specific tweet adding your own thoughts on top. User approval is required first.",
-    execute: async (args: { text: string, quoteTweetId: string, userId: string }) => {
+    execute: async (args: { text: string, quoteTweetId: string, userId: string }, context?: any) => {
         if (!args.text || !args.quoteTweetId || !args.userId) {
             return "Error: text, quoteTweetId, and userId are required.";
         }

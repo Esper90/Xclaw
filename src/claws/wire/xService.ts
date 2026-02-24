@@ -167,7 +167,7 @@ export async function fetchXProfile(
     const normalizedHandle = cleanXHandle(handle);
 
     // Attempt dynamic import to avoid circular dependency
-    const { getCachedProfile, setCachedProfile } = await import("../../db/xCacheStore");
+    const { getCachedProfile, setCachedProfile } = await import("../../db/xCacheStore.js");
 
     if (useCache) {
         const cached = await getCachedProfile(normalizedHandle);
@@ -212,7 +212,7 @@ export async function fetchXProfile(
         const tweets = timelineRes.data.data || [];
 
         // 3. Save to Cache with the requested limit embedded
-        userRes.data._fetch_limit = limit;
+        (userRes.data as any)._fetch_limit = limit;
         await setCachedProfile(normalizedHandle, userRes.data, tweets);
 
         return {
