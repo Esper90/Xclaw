@@ -35,6 +35,7 @@ export async function generateReply(
 
     let currentResponse = await chat.sendMessage(userMessage);
     let turns = 0;
+    let previousFunctionCallsJson = "";
 
     while (turns < maxToolTurns) {
         turns++;
@@ -45,6 +46,16 @@ export async function generateReply(
         if (!functionCalls || functionCalls.length === 0) {
             return { text: textPart || "" };
         }
+
+        // --- Loop Prevention ---
+        // If the model asks for exactly the same tool calls with the same arguments twice in a row,
+        // it means it's stuck in an error loop (e.g. 403 Forbidden). Abort immediately.
+        const currentFunctionCallsJson = JSON.stringify(functionCalls);
+        if (currentFunctionCallsJson === previousFunctionCallsJson) {
+            console.warn(`[gemini] Tool loop detected! Model called the exact same tools consecutively. Aborting.`);
+            return { text: textPart || "(System Error: I encountered a persistent error while using tools and automatically halted to prevent a timeout. My previous drafts and context are still intact in our history.)" };
+        }
+        previousFunctionCallsJson = currentFunctionCallsJson;
 
         console.log(`[gemini] Turn ${turns}/${maxToolTurns} | Tools: ${functionCalls.map(f => f.name).join(", ")}`);
 
