@@ -257,7 +257,11 @@ ${dmLines.join("\n") || "No new DMs."}`;
     bot.command("thread", async (ctx) => {
         ctx.session.threadMode = true;
         ctx.session.threadBuffer = [];
-        await ctx.reply("🧵 *Voice-to-Thread Builder: ACTIVE*\n\nSend me ideas via text or voice. I will accumulate them. When you're done, type `/finish` and I will format them into a cohesive X thread and post it seamlessly.\n\n_(To cancel, type `/cancelthread`)_", { parse_mode: "Markdown" });
+        const msg = "🧵 *Voice-to-Thread Builder: ACTIVE*\n\nSend me ideas via text or voice. I will accumulate them. When you're done, type `/finish` and I will format them into a cohesive X thread and post it seamlessly.\n\n_(To cancel, type `/cancelthread`)_";
+        await ctx.reply(msg, { parse_mode: "Markdown" });
+
+        // Record interaction
+        ctx.session.buffer = recordInteraction(ctx.session.buffer, `/thread`, msg);
     });
 
     bot.command("cancelthread", async (ctx) => {
@@ -339,12 +343,16 @@ ${buffer.join("\n")}`;
             ctx.session.threadMode = false;
             ctx.session.threadBuffer = [];
 
+            const finalMsg = `✅ *Thread posted successfully!*\n\nhttps://x.com/i/status/${previousTweetId}`;
             await ctx.api.editMessageText(
                 ctx.chat.id,
                 waitMsg.message_id,
-                `✅ *Thread posted successfully!*\n\nhttps://x.com/i/status/${previousTweetId}`,
+                finalMsg,
                 { parse_mode: "Markdown" }
             );
+
+            // Record interaction
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/finish`, finalMsg);
 
         } catch (err: any) {
             console.error("[router] /finish failed:", err);
