@@ -112,12 +112,20 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
                 message += `🔗 https://x.com/i/status/${m.id}\n\n`;
             }
 
-            await ctx.api.editMessageText(
-                ctx.chat.id,
-                waitMsg.message_id,
-                message.trim(),
-                { parse_mode: "Markdown" }
-            );
+            try {
+                await ctx.api.editMessageText(
+                    ctx.chat.id,
+                    waitMsg.message_id,
+                    message.trim(),
+                    { parse_mode: "Markdown" }
+                );
+            } catch (err) {
+                await ctx.api.editMessageText(
+                    ctx.chat.id,
+                    waitMsg.message_id,
+                    message.trim()
+                );
+            }
 
             // Record interaction for AI background context
             ctx.session.buffer = recordInteraction(ctx.session.buffer, `/mentions`, message.trim());
@@ -172,12 +180,20 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             }
             message += `_Reply naturally — e.g. "reply to A", "reply to all", "reply to B but ask if they're free Friday"_`;
 
-            await ctx.api.editMessageText(
-                ctx.chat.id,
-                waitMsg.message_id,
-                message.trim(),
-                { parse_mode: "Markdown" }
-            );
+            try {
+                await ctx.api.editMessageText(
+                    ctx.chat.id,
+                    waitMsg.message_id,
+                    message.trim(),
+                    { parse_mode: "Markdown" }
+                );
+            } catch (err) {
+                await ctx.api.editMessageText(
+                    ctx.chat.id,
+                    waitMsg.message_id,
+                    message.trim()
+                );
+            }
 
             // Record interaction for AI background context
             ctx.session.buffer = recordInteraction(ctx.session.buffer, `/dms`, message.trim());
