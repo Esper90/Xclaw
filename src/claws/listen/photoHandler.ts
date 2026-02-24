@@ -65,9 +65,11 @@ export async function handlePhoto(ctx: BotContext): Promise<void> {
         // 2. Prepare for Gemini (requires base64)
         const base64Data = buffer.toString("base64");
         const mimeType = "image/jpeg";
+        console.log(`[photoHandler] Downloaded, size: ${base64Data.length} chars. Calling describePhotoForMemory...`);
 
         // 3. Get detailed description from Gemini 1.5 Flash
         const description = await describePhotoForMemory(base64Data, mimeType, userCaption);
+        console.log(`[photoHandler] Description received. Upserting to memory...`);
 
         // 4. Upsert to Pinecone
         // Prefix description so it's clear it's an image in vector search
@@ -76,10 +78,12 @@ export async function handlePhoto(ctx: BotContext): Promise<void> {
             source: "photo",
             fileId: largestPhoto.file_id
         });
+        console.log(`[photoHandler] Memory upserted. Triggering handleText...`);
 
         // 5. Trigger proactive AI reaction
         const syntheticTrigger = `[SYSTEM_EVENT]: User uploaded a photo. fileId: ${largestPhoto.file_id}. Description: ${description}`;
         const aiReply = await handleText(ctx, syntheticTrigger);
+        console.log(`[photoHandler] handleText finished. Updating Telegram message...`);
 
         await ctx.api.editMessageText(
             ctx.chat!.id,
