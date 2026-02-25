@@ -19,8 +19,8 @@ const searchMemoryTool: McpTool = {
                 return `No memories found matching "${args.query}".`;
             }
 
-            // Filter to reasonably relevant stuff
-            const relevant = results.filter(r => r.score >= 0.70);
+            // Filter to reasonably relevant stuff (lowered to 0.45 because short AI queries often score lower against dense paragraph memories)
+            const relevant = results.filter(r => r.score >= 0.45);
             if (relevant.length === 0) {
                 return `Found some vaguely related memories, but nothing with a strong match for "${args.query}".`;
             }
