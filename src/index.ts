@@ -10,6 +10,7 @@ import "./claws/wire/tools/x";
 import "./claws/wire/tools/search_memory";
 import "./claws/wire/tools/x_inbox";
 import "./claws/wire/tools/x_reply";
+import "./claws/wire/tools/schedule_post";
 import "./claws/wire/tools/web_search";
 import "./claws/wire/tools/user_settings";
 import "./claws/wire/tools/set_reminder";
@@ -28,6 +29,7 @@ import { injectSendFunction } from "./api/routes/drafts";
 import { startButlerWatcher } from "./claws/wire/xButler";
 import { injectWebhookSender } from "./api/routes/xWebhook";
 import { startReminderWatcher } from "./db/reminderWatcher";
+import { startPostWatcher } from "./db/postWatcher";
 
 async function main(): Promise<void> {
     console.log("🦾 Starting Xclaw...");
@@ -86,6 +88,12 @@ async function main(): Promise<void> {
     );
     // ── 6c. Start reminder background watcher (60s exact-time checks) ──────────
     startReminderWatcher(
+        async (chatId, text) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
+        }
+    );
+    // ── 6d. Start scheduled post watcher (60s exact-time checks) ───────────────
+    startPostWatcher(
         async (chatId, text) => {
             await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
         }
