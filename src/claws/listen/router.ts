@@ -802,30 +802,6 @@ ${buffer.join("\n")}`;
         }
     });
 
-    // ── /exportkey — Securely reveal the Pinecone AES key ────────────────────
-    bot.command("exportkey", async (ctx) => {
-        const userId = String(ctx.from!.id);
-        try {
-            const userKey = await getOrGeneratePineconeKey(Number(userId));
-            if (!userKey) {
-                await ctx.reply("❌ Private infrastructure is not configured. Cannot export key.");
-                return;
-            }
-
-            await ctx.reply(
-                `🔐 *Your Private Encryption Key*\n\n` +
-                `This is the 256-bit AES-GCM key used to client-side encrypt your data before it is stored in Pinecone. ` +
-                `The server only stores an encrypted version of this key and cannot read your memories without it.\n\n` +
-                `\`${userKey.toString('hex')}\`\n\n` +
-                `⚠️ *Do not share this key with anyone!*`,
-                { parse_mode: "Markdown" }
-            );
-        } catch (err: any) {
-            console.error("[router] /exportkey failed:", err);
-            await ctx.reply("❌ Failed to retrieve your encryption key.", { parse_mode: "Markdown" });
-        }
-    });
-
     // ── /setup — X credential onboarding wizard ──────────────────────────────
     bot.command("setup", async (ctx) => {
         ctx.session.setupWizard = { step: "consumer_key", partial: {} };

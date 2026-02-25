@@ -99,6 +99,9 @@ export async function queryMemory(
                 console.error(`[pinecone] Failed to decrypt memory ${m.id}:`, err);
                 meta = { text: "⚠️ [Encrypted Memory - Decryption Failed]" };
             }
+        } else if (meta.encrypted_payload && !userKey) {
+            console.error(`[pinecone] Cannot decrypt memory ${m.id} because userKey is missing.`);
+            meta = { text: "⚠️ [Encrypted Memory - Key Unavailable]" };
         }
 
         return {
