@@ -81,3 +81,22 @@ export async function markRemindersCompleted(ids: string[]): Promise<void> {
         console.error("[reminders] Failed to update reminder status:", error);
     }
 }
+
+/**
+ * Deletes all reminders for a specific user.
+ * Used when a user wipes their account via /deletekeys.
+ */
+export async function deleteAllRemindersForUser(userId: number): Promise<void> {
+    if (!isSupabaseConfigured()) return;
+
+    const db = getSupabase();
+    const { error } = await db
+        .from('xclaw_reminders')
+        .delete()
+        .eq('user_id', userId);
+
+    if (error) {
+        console.error(`[reminders] Failed to delete reminders for user ${userId}:`, error);
+        throw error;
+    }
+}

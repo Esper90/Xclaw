@@ -11,6 +11,7 @@ import { fetchMentions, fetchDMs } from "../wire/xButler";
 import { TwitterApi } from "twitter-api-v2";
 import { upsertUser, deleteUser, getUser } from "../../db/userStore";
 import { deleteCachedProfile } from "../../db/xCacheStore";
+import { deleteAllRemindersForUser } from "../../db/reminders";
 import { invalidateUserXClient } from "../../db/getUserClient";
 import { registerAndSubscribeWebhook } from "../../x/webhookManager";
 import { config } from "../../config";
@@ -634,8 +635,9 @@ ${buffer.join("\n")}`;
                     await deleteCachedProfile(user.x_username).catch(() => { });
                 }
                 await deleteMemory(String(telegramId)).catch(() => { });
+                await deleteAllRemindersForUser(telegramId).catch(() => { });
 
-                const msg = "✅ *Account Data Wiped.*\n\nYour X API keys, settings, memories, and profile cache have been permanently deleted from our secure databases. Use /setup if you ever wish to reconnect.";
+                const msg = "✅ *Account Data Wiped.*\n\nYour X API keys, settings, memories, reminders, and profile cache have been permanently deleted from our secure databases. Use /setup if you ever wish to reconnect.";
                 await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message!.message_id, msg, { parse_mode: "Markdown" });
                 ctx.session.buffer = []; // Clear short-term memory too
             } catch (err) {

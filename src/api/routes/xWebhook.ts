@@ -352,13 +352,16 @@ xWebhookRouter.post("/:telegramId", async (req: Request, res: Response) => {
     if (isSupabaseConfigured()) {
         try {
             const userRow = await getUser(telegramId);
-            if (userRow) {
-                userMentionAllowlist = parseAllowlist(userRow.mention_allowlist ?? undefined);
-                userDmAllowlist = parseAllowlist(userRow.dm_allowlist ?? undefined);
-                consumerSecret = userRow.x_consumer_secret;
+            if (!userRow) {
+                console.warn(`[x-webhook/${telegramId}] Webhook received for deleted or unknown user — dropping payload.`);
+                return;
             }
+            userMentionAllowlist = parseAllowlist(userRow.mention_allowlist ?? undefined);
+            userDmAllowlist = parseAllowlist(userRow.dm_allowlist ?? undefined);
+            consumerSecret = userRow.x_consumer_secret;
         } catch (err) {
             console.warn(`[x-webhook/${telegramId}] DB lookup failed:`, err);
+            return; // Drop on DB error to avoid unauthorized data processing
         }
     }
 
