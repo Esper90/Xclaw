@@ -5,7 +5,7 @@ import { handleVoice } from "./voiceHandler";
 import { handlePhoto } from "./photoHandler";
 import { handleDocument } from "./documentHandler";
 import { registerHeartbeat, unregisterHeartbeat } from "../sense/heartbeat";
-import { queryMemory, forgetMemory, upsertMemory } from "../archive/pinecone";
+import { queryMemory, forgetMemory, upsertMemory, deleteMemory } from "../archive/pinecone";
 import { postTweet } from "../wire/xService";
 import { fetchMentions, fetchDMs } from "../wire/xButler";
 import { TwitterApi } from "twitter-api-v2";
@@ -49,6 +49,7 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `🔒 *Privacy & Control:*\n` +
             `_Use /deletekeys at any time to instantly wipe your X credentials from our system._\n` +
             `_Use /forget <topic> to delete specific memories._\n` +
+            `_Use /forgetall to permanently wipe your entire memory bank._\n` +
             `_Your data is never sold, shared, or used for advertising._`,
             { parse_mode: "Markdown" }
         );
@@ -76,6 +77,7 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `🔒 *Privacy & Control:*\n` +
             `_Use /deletekeys at any time to instantly wipe your X credentials from our system._\n` +
             `_Use /forget <topic> to delete specific memories._\n` +
+            `_Use /forgetall to permanently wipe your entire memory bank._\n` +
             `_Your data is never sold, shared, or used for advertising._`,
             { parse_mode: "Markdown" }
         );
@@ -530,6 +532,55 @@ ${buffer.join("\n")}`;
             ctx.session.buffer = recordInteraction(ctx.session.buffer, `/memory ${query}`, response);
         } catch (err) {
             await ctx.reply("❌ Memory search failed. Please try again.");
+        }
+    });
+
+    bot.command("forget", async (ctx) => {
+        const query = ctx.match?.trim();
+        if (!query) {
+            await ctx.reply("Usage: `/forget <description>`\nExample: `/forget that idea about the new app`", { parse_mode: "Markdown" });
+            return;
+        }
+
+        const userId = String(ctx.from!.id);
+        await ctx.reply("🧠 Searching memory bank...");
+
+        try {
+            const result = await forgetMemory(userId, query);
+            await ctx.reply(result, { parse_mode: "Markdown" });
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/forget ${query}`, result);
+        } catch (err) {
+            await ctx.reply("❌ Failed to delete memory. Please try again.");
+        }
+    });
+
+    bot.command("forgetall", async (ctx) => {
+        const userId = String(ctx.from!.id);
+        await ctx.reply("🧨 Wiping your entire memory bank...");
+
+        try {
+            await deleteMemory(userId);
+            const msg = "✅ *All memories deleted.*\n\nMy long-term memory has been completely wiped. I will start fresh from this point forward.";
+            await ctx.reply(msg, { parse_mode: "Markdown" });
+            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/forgetall`, msg);
+        } catch (err) {
+            await ctx.reply("❌ Failed to wipe memories. Please try again.");
+        }
+    });
+
+    bot.command("deletekeys", async (ctx) => {
+        const telegramId = ctx.from!.id;
+        await ctx.reply("🗑️ Deleting your X credentials and account data...");
+
+        try {
+            await deleteUser(telegramId);
+            invalidateUserXClient(telegramId);
+            const msg = "✅ *Account Data Wiped.*\n\nYour X API keys, settings, and allowlists have been permanently deleted from our secure database. Use /setup if you ever wish to reconnect.";
+            await ctx.reply(msg, { parse_mode: "Markdown" });
+            ctx.session.buffer = []; // Clear short-term memory too
+        } catch (err) {
+            console.error("[router] /deletekeys failed:", err);
+            await ctx.reply("❌ Failed to delete keys. They may already be deleted.");
         }
     });
 
