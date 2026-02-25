@@ -40,6 +40,8 @@ export interface UserRecord {
     dm_allowlist?: string | null;
     /** User's local timezone (e.g. 'America/Los_Angeles') */
     timezone?: string | null;
+    /** If true, the user is globally banned from using Xclaw */
+    is_banned?: boolean;
     created_at?: string;
 }
 

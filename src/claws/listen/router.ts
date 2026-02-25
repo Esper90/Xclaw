@@ -17,6 +17,7 @@ import { registerAndSubscribeWebhook } from "../../x/webhookManager";
 import { config } from "../../config";
 import { synthesizeToFile } from "../sense/tts";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { consumeToken } from "../sense/rateLimiter";
 import { InputFile, InlineKeyboard } from "grammy";
 import { recordInteraction } from "../archive/buffer";
 
@@ -822,15 +823,51 @@ ${buffer.join("\n")}`;
         }
     });
 
+    // ── Pre-handler middleware logic ───────────────────────────────────────────
+    async function enforceLimits(ctx: BotContext): Promise<boolean> {
+        const telegramId = ctx.from!.id;
+
+        // 1. Rate Limiting Check (Token Bucket)
+        if (!consumeToken(String(telegramId))) {
+            await ctx.reply("⏳ *Whoa, slow down!*\n\nI am processing too many requests from you at once. Please wait a few seconds.", { parse_mode: "Markdown" });
+            return false;
+        }
+
+        // 2. Global Ban Check (Nuclear Option)
+        try {
+            const user = await getUser(telegramId);
+            if (user?.is_banned) {
+                await ctx.reply("🛑 *Access Revoked*\n\nYour access to Xclaw has been permanently disabled due to a violation of the Terms of Service.");
+                return false;
+            }
+        } catch (err) {
+            console.warn(`[router] Ban check failed for ${telegramId}:`, err);
+        }
+
+        return true;
+    }
+
     // ── Voice / Audio messages ─────────────────────────────────────────────────
-    bot.on("message:voice", handleVoice);
-    bot.on("message:audio", handleVoice);
+    bot.on("message:voice", async (ctx) => {
+        if (!(await enforceLimits(ctx))) return;
+        return handleVoice(ctx);
+    });
+    bot.on("message:audio", async (ctx) => {
+        if (!(await enforceLimits(ctx))) return;
+        return handleVoice(ctx);
+    });
 
     // ── Photos / Image messages ────────────────────────────────────────────────
-    bot.on("message:photo", handlePhoto);
+    bot.on("message:photo", async (ctx) => {
+        if (!(await enforceLimits(ctx))) return;
+        return handlePhoto(ctx);
+    });
 
     // ── Document / File messages ───────────────────────────────────────────────
-    bot.on("message:document", handleDocument);
+    bot.on("message:document", async (ctx) => {
+        if (!(await enforceLimits(ctx))) return;
+        return handleDocument(ctx);
+    });
 
     // ── Text messages ─────────────────────────────────────────────────────────
     bot.on("message:text", async (ctx) => {
@@ -848,6 +885,9 @@ ${buffer.join("\n")}`;
             const handled = await handleSettingTextInput(ctx, userMessage);
             if (handled) return;
         }
+
+        // Check Rate Limits & Bans ONLY for standard conversational AI turns
+        if (!(await enforceLimits(ctx))) return;
 
         // Show typing indicator
         await ctx.replyWithChatAction("typing");
