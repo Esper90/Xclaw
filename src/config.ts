@@ -20,7 +20,7 @@ const schema = z.object({
 
     // Grok (xAI)
     GROK_API_KEY: z.string().min(10, "GROK_API_KEY is required"),
-    GROK_MODEL: z.string().default("grok-4-latest"),
+    GROK_MODEL: z.string().default("grok-4-1-fast-non-reasoning"),
 
     // Groq
     GROQ_API_KEY: z.string().min(10, "GROQ_API_KEY is required"),
