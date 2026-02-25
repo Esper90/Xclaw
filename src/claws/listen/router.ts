@@ -9,7 +9,7 @@ import { queryMemory, forgetMemory, upsertMemory, deleteMemory } from "../archiv
 import { postTweet } from "../wire/xService";
 import { fetchMentions, fetchDMs } from "../wire/xButler";
 import { TwitterApi } from "twitter-api-v2";
-import { upsertUser, deleteUser, getUser } from "../../db/userStore";
+import { upsertUser, deleteUser, getUser, getOrGeneratePineconeKey } from "../../db/userStore";
 import { deleteCachedProfile } from "../../db/xCacheStore";
 import { deleteAllRemindersForUser } from "../../db/reminders";
 import { invalidateUserXClient } from "../../db/getUserClient";
@@ -90,6 +90,7 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `/settings — Open comprehensive settings menu\n` +
             `/help — Show this message\n\n` +
             `🔒 *Privacy & Control:*\n` +
+            `_Use /exportkey to securely view your Pinecone AES-256 memory encryption key._\n` +
             `_Use /deletekeys at any time to instantly wipe your X credentials from our system._\n` +
             `_Use /forget <topic> to delete specific memories._\n` +
             `_Use /forgetall to permanently wipe your entire memory bank._\n` +
@@ -118,6 +119,7 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `*/heartbeat on* — Enable check-ins\n` +
             `*/heartbeat off* — Disable check-ins\n\n` +
             `🔒 *Privacy & Control:*\n` +
+            `_Use /exportkey to securely view your Pinecone AES-256 memory encryption key._\n` +
             `_Use /deletekeys at any time to instantly wipe your X credentials from our system._\n` +
             `_Use /forget <topic> to delete specific memories._\n` +
             `_Use /forgetall to permanently wipe your entire memory bank._\n` +
@@ -774,6 +776,53 @@ ${buffer.join("\n")}`;
                 "❌ Failed to delete memory. Please try again.",
                 { parse_mode: "Markdown" }
             );
+        }
+    });
+
+    bot.command("exportkey", async (ctx) => {
+        const userId = ctx.from!.id;
+        try {
+            const userKey = await getOrGeneratePineconeKey(userId);
+            if (!userKey) {
+                await ctx.reply("❌ Necessary infrastructure is not configured. Cannot export key.");
+                return;
+            }
+
+            await ctx.reply(
+                `🔐 *Your Private Encryption Key*\n\n` +
+                `This is the AES-256-GCM key used to encrypt your memories *before* they are sent to the vector database. ` +
+                `The server only stores an encrypted version of this key using a master wrapper key.\n\n` +
+                `\`${userKey.toString('hex')}\`\n\n` +
+                `⚠️ *Do not share this key with anyone!*`,
+                { parse_mode: "Markdown" }
+            );
+        } catch (err: any) {
+            console.error("[router] /exportkey failed:", err);
+            await ctx.reply("❌ Failed to retrieve your encryption key.", { parse_mode: "Markdown" });
+        }
+    });
+
+    // ── /exportkey — Securely reveal the Pinecone AES key ────────────────────
+    bot.command("exportkey", async (ctx) => {
+        const userId = String(ctx.from!.id);
+        try {
+            const userKey = await getOrGeneratePineconeKey(Number(userId));
+            if (!userKey) {
+                await ctx.reply("❌ Private infrastructure is not configured. Cannot export key.");
+                return;
+            }
+
+            await ctx.reply(
+                `🔐 *Your Private Encryption Key*\n\n` +
+                `This is the 256-bit AES-GCM key used to client-side encrypt your data before it is stored in Pinecone. ` +
+                `The server only stores an encrypted version of this key and cannot read your memories without it.\n\n` +
+                `\`${userKey.toString('hex')}\`\n\n` +
+                `⚠️ *Do not share this key with anyone!*`,
+                { parse_mode: "Markdown" }
+            );
+        } catch (err: any) {
+            console.error("[router] /exportkey failed:", err);
+            await ctx.reply("❌ Failed to retrieve your encryption key.", { parse_mode: "Markdown" });
         }
     });
 

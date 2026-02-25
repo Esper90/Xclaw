@@ -25,6 +25,7 @@
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { config } from "../config";
+import { generateUserKey, encryptUserKey, decryptUserKey } from "../claws/archive/crypto";
 
 export interface UserRecord {
     telegram_id: number;
@@ -42,6 +43,8 @@ export interface UserRecord {
     timezone?: string | null;
     /** If true, the user is globally banned from using Xclaw */
     is_banned?: boolean;
+    /** User's unique AES-256-GCM key encrypted by PINECONE_MASTER_KEY */
+    encrypted_pinecone_key?: string | null;
     created_at?: string;
 }
 
@@ -123,4 +126,49 @@ export async function listAllUsers(): Promise<UserRecord[]> {
     const { data, error } = await db.from("xclaw_users").select("*");
     if (error) throw error;
     return (data ?? []) as UserRecord[];
+}
+
+/**
+ * Retrieves the user's encrypted Pinecone key, decrypts it, and returns the raw Buffer.
+ * If the user has no key, a new one is generated, encrypted, saved to Supabase, and returned.
+ * Returns null if Supabase is not configured or user is not found.
+ */
+export async function getOrGeneratePineconeKey(telegramId: number): Promise<Buffer | null> {
+    if (!isSupabaseConfigured()) return null;
+
+    const user = await getUser(telegramId);
+    if (!user) {
+        console.warn(`[userStore] Cannot get pinecone key for non-existent user ${telegramId}`);
+        return null;
+    }
+
+    if (user.encrypted_pinecone_key) {
+        try {
+            return decryptUserKey(user.encrypted_pinecone_key);
+        } catch (err) {
+            console.error(`[userStore] Failed to decrypt pinecone key for user ${telegramId}:`, err);
+            // If we fail to decrypt (e.g., MASTER_KEY changed), we have to generate a new one,
+            // but that means their old Pinecone memories are permanently gone.
+            // For now, let it throw so we know something is wrong.
+            throw err;
+        }
+    }
+
+    // Generate new key on first use
+    console.log(`[userStore] Generating new AES-256-GCM encryption key for user ${telegramId}`);
+    const rawKey = generateUserKey();
+    const encryptedKey = encryptUserKey(rawKey);
+
+    const db = getSupabase();
+    const { error } = await db
+        .from("xclaw_users")
+        .update({ encrypted_pinecone_key: encryptedKey })
+        .eq("telegram_id", telegramId);
+
+    if (error) {
+        console.error(`[userStore] Failed to save newly generated pinecone key for user ${telegramId}:`, error);
+        throw error;
+    }
+
+    return rawKey;
 }

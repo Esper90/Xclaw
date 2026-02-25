@@ -16,6 +16,7 @@ const schema = z.object({
     // Pinecone
     PINECONE_API_KEY: z.string().min(10, "PINECONE_API_KEY is required"),
     PINECONE_INDEX_NAME: z.string().default("gravity-claw"),
+    PINECONE_MASTER_KEY: z.string().optional(),
 
     // Groq
     GROQ_API_KEY: z.string().min(10, "GROQ_API_KEY is required"),

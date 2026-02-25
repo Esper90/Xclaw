@@ -1,6 +1,8 @@
 import { Pinecone } from "@pinecone-database/pinecone";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { config } from "../../config";
+import { getOrGeneratePineconeKey } from "../../db/userStore";
+import { encryptPayload, decryptPayload } from "./crypto";
 
 const pc = new Pinecone({ apiKey: config.PINECONE_API_KEY });
 const index = pc.index(config.PINECONE_INDEX_NAME);
@@ -38,11 +40,24 @@ export async function upsertMemory(
     const id = customId ?? `${userId}-${Date.now()}`;
     const values = await embed(text);
 
+    let finalMetadata: Record<string, any> = { text, userId, ...metadata };
+
+    try {
+        const userKey = await getOrGeneratePineconeKey(Number(userId));
+        if (userKey) {
+            const encryptedStr = encryptPayload(finalMetadata, userKey);
+            finalMetadata = { encrypted_payload: encryptedStr };
+        }
+    } catch (err) {
+        console.error(`[pinecone] Failed to encrypt memory for user ${userId}:`, err);
+        throw new Error("Encryption failed, memory discarded for privacy safety.");
+    }
+
     await index.namespace(userId).upsert([
         {
             id,
             values,
-            metadata: { text, userId, ...metadata },
+            metadata: finalMetadata,
         },
     ]);
 
@@ -66,12 +81,33 @@ export async function queryMemory(
         includeMetadata: true,
     });
 
-    return (results.matches ?? []).map((m) => ({
-        id: m.id,
-        text: (m.metadata?.text as string) ?? "",
-        score: m.score ?? 0,
-        metadata: (m.metadata as Record<string, string>) ?? {},
-    }));
+    let userKey: Buffer | null = null;
+    try {
+        userKey = await getOrGeneratePineconeKey(Number(userId));
+    } catch (err) {
+        console.error(`[pinecone] Failed to retrieve key for query decryption (userId: ${userId}):`, err);
+    }
+
+    return (results.matches ?? []).map((m) => {
+        let meta = (m.metadata as Record<string, any>) ?? {};
+
+        // Transparently decrypt if it's an encrypted payload
+        if (meta.encrypted_payload && userKey) {
+            try {
+                meta = decryptPayload(meta.encrypted_payload, userKey);
+            } catch (err) {
+                console.error(`[pinecone] Failed to decrypt memory ${m.id}:`, err);
+                meta = { text: "⚠️ [Encrypted Memory - Decryption Failed]" };
+            }
+        }
+
+        return {
+            id: m.id,
+            text: (meta.text as string) ?? "",
+            score: m.score ?? 0,
+            metadata: meta,
+        };
+    });
 }
 
 /**
