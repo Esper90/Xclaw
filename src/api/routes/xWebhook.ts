@@ -352,8 +352,8 @@ xWebhookRouter.post("/:telegramId", async (req: Request, res: Response) => {
     if (isSupabaseConfigured()) {
         try {
             const userRow = await getUser(telegramId);
-            if (!userRow) {
-                console.warn(`[x-webhook/${telegramId}] Webhook received for deleted or unknown user — dropping payload.`);
+            if (!userRow || userRow.is_banned) {
+                console.warn(`[x-webhook/${telegramId}] Webhook received for deleted or BANNED user — dropping payload.`);
                 return;
             }
             userMentionAllowlist = parseAllowlist(userRow.mention_allowlist ?? undefined);

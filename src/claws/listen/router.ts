@@ -27,6 +27,46 @@ const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
  * Register all bot message and command handlers on the bot instance.
  */
 export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
+    // ── Global Safeguard Middleware ─────────────────────────────────────────
+    bot.use(async (ctx, next) => {
+        if (!ctx.from) return next();
+
+        // Do not limit onboarding, account deletion, or privacy confirmation clicks
+        const text = ctx.message?.text || ctx.callbackQuery?.data || "";
+        if (text.startsWith("/setup") || text.startsWith("/deletekeys") || text.startsWith("privacy:")) {
+            return next();
+        }
+
+        const telegramId = ctx.from.id;
+
+        // 1. Rate Limiting Check (Token Bucket)
+        if (!consumeToken(String(telegramId))) {
+            if (ctx.callbackQuery) {
+                await ctx.answerCallbackQuery({ text: "⏳ Whoa, slow down! Too many requests.", show_alert: true });
+            } else {
+                await ctx.reply("⏳ *Whoa, slow down!*\n\nI am processing too many requests from you at once. Please wait a few seconds.", { parse_mode: "Markdown" });
+            }
+            return;
+        }
+
+        // 2. Global Ban Check (Nuclear Option)
+        try {
+            const user = await getUser(telegramId);
+            if (user?.is_banned) {
+                if (ctx.callbackQuery) {
+                    await ctx.answerCallbackQuery({ text: "🛑 Access Revoked", show_alert: true });
+                } else {
+                    await ctx.reply("🛑 *Access Revoked*\n\nYour access to Xclaw has been permanently disabled due to a violation of the Terms of Service.");
+                }
+                return;
+            }
+        } catch (err) {
+            console.warn(`[router] Ban check failed for ${telegramId}:`, err);
+        }
+
+        return next();
+    });
+
     // ── Commands ─────────────────────────────────────────────────────────────
 
     bot.command("start", async (ctx) => {
@@ -823,51 +863,15 @@ ${buffer.join("\n")}`;
         }
     });
 
-    // ── Pre-handler middleware logic ───────────────────────────────────────────
-    async function enforceLimits(ctx: BotContext): Promise<boolean> {
-        const telegramId = ctx.from!.id;
-
-        // 1. Rate Limiting Check (Token Bucket)
-        if (!consumeToken(String(telegramId))) {
-            await ctx.reply("⏳ *Whoa, slow down!*\n\nI am processing too many requests from you at once. Please wait a few seconds.", { parse_mode: "Markdown" });
-            return false;
-        }
-
-        // 2. Global Ban Check (Nuclear Option)
-        try {
-            const user = await getUser(telegramId);
-            if (user?.is_banned) {
-                await ctx.reply("🛑 *Access Revoked*\n\nYour access to Xclaw has been permanently disabled due to a violation of the Terms of Service.");
-                return false;
-            }
-        } catch (err) {
-            console.warn(`[router] Ban check failed for ${telegramId}:`, err);
-        }
-
-        return true;
-    }
-
     // ── Voice / Audio messages ─────────────────────────────────────────────────
-    bot.on("message:voice", async (ctx) => {
-        if (!(await enforceLimits(ctx))) return;
-        return handleVoice(ctx);
-    });
-    bot.on("message:audio", async (ctx) => {
-        if (!(await enforceLimits(ctx))) return;
-        return handleVoice(ctx);
-    });
+    bot.on("message:voice", handleVoice);
+    bot.on("message:audio", handleVoice);
 
     // ── Photos / Image messages ────────────────────────────────────────────────
-    bot.on("message:photo", async (ctx) => {
-        if (!(await enforceLimits(ctx))) return;
-        return handlePhoto(ctx);
-    });
+    bot.on("message:photo", handlePhoto);
 
     // ── Document / File messages ───────────────────────────────────────────────
-    bot.on("message:document", async (ctx) => {
-        if (!(await enforceLimits(ctx))) return;
-        return handleDocument(ctx);
-    });
+    bot.on("message:document", handleDocument);
 
     // ── Text messages ─────────────────────────────────────────────────────────
     bot.on("message:text", async (ctx) => {
@@ -885,9 +889,6 @@ ${buffer.join("\n")}`;
             const handled = await handleSettingTextInput(ctx, userMessage);
             if (handled) return;
         }
-
-        // Check Rate Limits & Bans ONLY for standard conversational AI turns
-        if (!(await enforceLimits(ctx))) return;
 
         // Show typing indicator
         await ctx.replyWithChatAction("typing");
