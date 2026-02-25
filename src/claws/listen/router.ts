@@ -16,7 +16,7 @@ import { registerAndSubscribeWebhook } from "../../x/webhookManager";
 import { config } from "../../config";
 import { synthesizeToFile } from "../sense/tts";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { InputFile } from "grammy";
+import { InputFile, InlineKeyboard } from "grammy";
 import { recordInteraction } from "../archive/buffer";
 
 const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
@@ -556,47 +556,98 @@ ${buffer.join("\n")}`;
     });
 
     bot.command("forgetall", async (ctx) => {
-        const userId = String(ctx.from!.id);
-        await ctx.reply("🧨 Wiping your entire memory bank...");
+        const keyboard = new InlineKeyboard()
+            .text("❌ Cancel", "privacy:cancel")
+            .text("🔥 YES, WIPE MEMORY", "privacy:confirm_forgetall");
 
-        try {
-            await deleteMemory(userId);
-            const msg = "✅ *All memories deleted.*\n\nMy long-term memory has been completely wiped. I will start fresh from this point forward.";
-            await ctx.reply(msg, { parse_mode: "Markdown" });
-            ctx.session.buffer = recordInteraction(ctx.session.buffer, `/forgetall`, msg);
-        } catch (err) {
-            await ctx.reply("❌ Failed to wipe memories. Please try again.");
-        }
+        await ctx.reply(
+            "⚠️ *WARNING: NUCLEAR OPTION*\n\n" +
+            "This will instantly and permanently delete **EVERY** long-term memory I have of you. I will forget everything we've ever discussed.\n\n" +
+            "Are you absolutely sure you want to do this?",
+            { parse_mode: "Markdown", reply_markup: keyboard }
+        );
     });
 
     bot.command("deletekeys", async (ctx) => {
-        const telegramId = ctx.from!.id;
-        await ctx.reply("🗑️ Deleting your X credentials and account data...");
+        const keyboard = new InlineKeyboard()
+            .text("❌ Cancel", "privacy:cancel")
+            .text("🔥 YES, WIPE ACCOUNT", "privacy:confirm_deletekeys");
 
-        try {
-            // Fetch before deletion so we know which cache handle to wipe
-            const user = await getUser(telegramId);
+        await ctx.reply(
+            "⚠️ *WARNING: TOTAL WIPE*\n\n" +
+            "This will instantly delete your X API Keys, Settings, Allowlists, **AND** all your Long-Term Memories.\n\n" +
+            "Xclaw will completely forget you exist. Are you sure?",
+            { parse_mode: "Markdown", reply_markup: keyboard }
+        );
+    });
 
-            await deleteUser(telegramId);
-            invalidateUserXClient(telegramId);
+    // ── Privacy Confirmation Callbacks ───────────────────────────────────────
+    bot.on("callback_query:data", async (ctx, next) => {
+        const data = ctx.callbackQuery.data;
 
-            // Clean up their public profile cache if they existed
-            if (user?.x_username) {
-                await deleteCachedProfile(user.x_username).catch(() => { }); // fire and forget
-            }
-
-            // Wipe their entire Pinecone memory namespace
-            await deleteMemory(String(telegramId)).catch(err => {
-                console.error("[router] Failed to wipe Pinecone namespace during /deletekeys:", err);
-            });
-
-            const msg = "✅ *Account Data Wiped.*\n\nYour X API keys, settings, memories, and profile cache have been permanently deleted from our secure databases. Use /setup if you ever wish to reconnect.";
-            await ctx.reply(msg, { parse_mode: "Markdown" });
-            ctx.session.buffer = []; // Clear short-term memory too
-        } catch (err) {
-            console.error("[router] /deletekeys failed:", err);
-            await ctx.reply("❌ Failed to delete keys. They may already be deleted.");
+        if (data === "privacy:cancel") {
+            await ctx.api.editMessageText(
+                ctx.chat!.id,
+                ctx.callbackQuery.message!.message_id,
+                "🛑 *Cancelled.*\nYour data is safe.",
+                { parse_mode: "Markdown" }
+            );
+            await ctx.answerCallbackQuery();
+            return;
         }
+
+        if (data === "privacy:confirm_forgetall") {
+            const userId = String(ctx.from.id);
+            await ctx.api.editMessageText(
+                ctx.chat!.id,
+                ctx.callbackQuery.message!.message_id,
+                "🧨 Wiping your entire memory bank...",
+                { parse_mode: "Markdown" }
+            );
+
+            try {
+                await deleteMemory(userId);
+                const msg = "✅ *All memories deleted.*\n\nMy long-term memory has been completely wiped. I will start fresh from this point forward.";
+                await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message!.message_id, msg, { parse_mode: "Markdown" });
+                ctx.session.buffer = recordInteraction(ctx.session.buffer, `/forgetall`, msg);
+            } catch (err) {
+                await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message!.message_id, "❌ Failed to wipe memories. Please try again.");
+            }
+            await ctx.answerCallbackQuery();
+            return;
+        }
+
+        if (data === "privacy:confirm_deletekeys") {
+            const telegramId = ctx.from.id;
+            await ctx.api.editMessageText(
+                ctx.chat!.id,
+                ctx.callbackQuery.message!.message_id,
+                "🗑️ Deleting all your data...",
+                { parse_mode: "Markdown" }
+            );
+
+            try {
+                const user = await getUser(telegramId);
+                await deleteUser(telegramId);
+                invalidateUserXClient(telegramId);
+                if (user?.x_username) {
+                    await deleteCachedProfile(user.x_username).catch(() => { });
+                }
+                await deleteMemory(String(telegramId)).catch(() => { });
+
+                const msg = "✅ *Account Data Wiped.*\n\nYour X API keys, settings, memories, and profile cache have been permanently deleted from our secure databases. Use /setup if you ever wish to reconnect.";
+                await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message!.message_id, msg, { parse_mode: "Markdown" });
+                ctx.session.buffer = []; // Clear short-term memory too
+            } catch (err) {
+                console.error("[router] /deletekeys failed:", err);
+                await ctx.api.editMessageText(ctx.chat!.id, ctx.callbackQuery.message!.message_id, "❌ Failed to delete account. May already be deleted.");
+            }
+            await ctx.answerCallbackQuery();
+            return;
+        }
+
+        // Pass to existing handlers (settingsHandler, etc.)
+        return next();
     });
 
     bot.command("braindump", async (ctx) => {
