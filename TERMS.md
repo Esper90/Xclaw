@@ -16,7 +16,7 @@ You have absolute control over your data. Your data is never sold, shared, or us
 By using Xclaw, you acknowledge that:
 *   **AI Actions:** Xclaw uses AI to generate content. You are solely responsible for any tweets, replies, or direct messages sent by Xclaw on your behalf.
 *   **API Costs & Limits:** Xclaw interacts with your personal X Developer App. You are solely responsible for any costs, rate limits, or account suspensions incurred on your X Developer account or main X account.
-*   **No Guarantees:** We provide Xclaw "as is" without warranties. We are not liable for any lost data, missed messages, or unintended public posts.
+*   **No Guarantees:** We provide Xclaw "as is" without warranties. We are not liable for any lost data, missed messages, unintended public posts, database outages, data corruptions, or accidental deletions occurring within Supabase, Pinecone, or any other internal infrastructure.
 
 ## 4. Acceptable Use & Banning
 Xclaw is designed as a personal assistant, not a spam bot. We reserve the right to ban users, revoke access, and delete data without notice if Xclaw is used to generate abusive content, spam, or violate the terms of service of X (Twitter), Telegram, or Google Gemini.
