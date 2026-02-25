@@ -585,7 +585,12 @@ ${buffer.join("\n")}`;
                 await deleteCachedProfile(user.x_username).catch(() => { }); // fire and forget
             }
 
-            const msg = "✅ *Account Data Wiped.*\n\nYour X API keys, settings, and profile cache have been permanently deleted from our secure database. Use /setup if you ever wish to reconnect.";
+            // Wipe their entire Pinecone memory namespace
+            await deleteMemory(String(telegramId)).catch(err => {
+                console.error("[router] Failed to wipe Pinecone namespace during /deletekeys:", err);
+            });
+
+            const msg = "✅ *Account Data Wiped.*\n\nYour X API keys, settings, memories, and profile cache have been permanently deleted from our secure databases. Use /setup if you ever wish to reconnect.";
             await ctx.reply(msg, { parse_mode: "Markdown" });
             ctx.session.buffer = []; // Clear short-term memory too
         } catch (err) {
