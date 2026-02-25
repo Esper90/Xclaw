@@ -5,6 +5,8 @@ import { draftsRouter } from "./routes/drafts";
 import { threadsRouter } from "./routes/threads";
 import { butlerRouter } from "./routes/butler";
 import { xWebhookRouter } from "./routes/xWebhook";
+import { twilioRouter } from "./routes/twilio";
+import { setupTwilioWebSocket } from "../claws/listen/voiceStreamHandler";
 import { config } from "../config";
 
 /**
@@ -33,6 +35,10 @@ export function startApiServer(): void {
     // POST /x-webhook  → real-time DM + mention push events
     app.use("/x-webhook", xWebhookRouter);
 
+    // ── Twilio Voice webhook (no auth — Twilio calls this directly) ────────
+    // POST /twilio/incoming → TwiML response pointing to /twilio/stream
+    app.use("/twilio", twilioRouter);
+
     // ── 404 handler ────────────────────────────────────────────────────────
     app.use((_req, res) => {
         res.status(404).json({ error: "Not found" });
@@ -40,7 +46,12 @@ export function startApiServer(): void {
 
     const port = parseInt(config.PORT, 10);
     const host = "0.0.0.0"; // Bind to all interfaces for Railway
-    app.listen(port, host, () => {
+
+    // We need the raw HTTP server to attach the WebSocket server to it
+    const server = app.listen(port, host, () => {
         console.log(`🌐 REST API listening on ${host}:${port}`);
     });
+
+    // Attach WebSockets
+    setupTwilioWebSocket(server);
 }

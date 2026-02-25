@@ -25,7 +25,7 @@ function translateHistory(history: Content[]): OpenAI.Chat.ChatCompletionMessage
 /**
  * Translates Gemini's FunctionDeclarationsTool[] into OpenAI's tools[] format.
  */
-function translateTools(geminiTools?: FunctionDeclarationsTool[]): OpenAI.Chat.ChatCompletionTool[] | undefined {
+export function translateTools(geminiTools?: FunctionDeclarationsTool[]): OpenAI.Chat.ChatCompletionTool[] | undefined {
     if (!geminiTools || geminiTools.length === 0) return undefined;
 
     const allDeclarations = geminiTools.flatMap(t => t.functionDeclarations || []);
