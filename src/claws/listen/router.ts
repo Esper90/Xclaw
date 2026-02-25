@@ -45,7 +45,11 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `/heartbeat on|off — Toggle proactive check-ins\n` +
             `/silence <dur> — Pause proactive messages\n` +
             `/settings — Open comprehensive settings menu\n` +
-            `/help — Show this message`,
+            `/help — Show this message\n\n` +
+            `🔒 *Privacy & Control:*\n` +
+            `_Use /deletekeys at any time to instantly wipe your X credentials from our system._\n` +
+            `_Use /forget <topic> to delete specific memories._\n` +
+            `_Your data is never sold, shared, or used for advertising._`,
             { parse_mode: "Markdown" }
         );
     });
@@ -68,7 +72,11 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `*/forget <query>* — Describe a memory for me to delete\n\n` +
             `*Heartbeat:* Proactive check-ins from me.\n` +
             `*/heartbeat on* — Enable check-ins\n` +
-            `*/heartbeat off* — Disable check-ins`,
+            `*/heartbeat off* — Disable check-ins\n\n` +
+            `🔒 *Privacy & Control:*\n` +
+            `_Use /deletekeys at any time to instantly wipe your X credentials from our system._\n` +
+            `_Use /forget <topic> to delete specific memories._\n` +
+            `_Your data is never sold, shared, or used for advertising._`,
             { parse_mode: "Markdown" }
         );
     });
