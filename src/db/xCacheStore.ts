@@ -56,3 +56,19 @@ export async function setCachedProfile(handle: string, profileData: any, tweetsD
 
     if (error) throw error;
 }
+
+/**
+ * Delete a profile from the cache.
+ * Useful when a user revokes their keys and we want to wipe their cached presence.
+ */
+export async function deleteCachedProfile(handle: string): Promise<void> {
+    const db = getSupabase();
+    const normalizedHandle = handle.toLowerCase().replace("@", "");
+
+    const { error } = await db
+        .from("xclaw_profile_cache")
+        .delete()
+        .eq("handle", normalizedHandle);
+
+    if (error) throw error;
+}

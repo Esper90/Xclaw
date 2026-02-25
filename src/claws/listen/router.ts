@@ -9,7 +9,8 @@ import { queryMemory, forgetMemory, upsertMemory, deleteMemory } from "../archiv
 import { postTweet } from "../wire/xService";
 import { fetchMentions, fetchDMs } from "../wire/xButler";
 import { TwitterApi } from "twitter-api-v2";
-import { upsertUser, deleteUser } from "../../db/userStore";
+import { upsertUser, deleteUser, getUser } from "../../db/userStore";
+import { deleteCachedProfile } from "../../db/xCacheStore";
 import { invalidateUserXClient } from "../../db/getUserClient";
 import { registerAndSubscribeWebhook } from "../../x/webhookManager";
 import { config } from "../../config";
@@ -573,9 +574,18 @@ ${buffer.join("\n")}`;
         await ctx.reply("🗑️ Deleting your X credentials and account data...");
 
         try {
+            // Fetch before deletion so we know which cache handle to wipe
+            const user = await getUser(telegramId);
+
             await deleteUser(telegramId);
             invalidateUserXClient(telegramId);
-            const msg = "✅ *Account Data Wiped.*\n\nYour X API keys, settings, and allowlists have been permanently deleted from our secure database. Use /setup if you ever wish to reconnect.";
+
+            // Clean up their public profile cache if they existed
+            if (user?.x_username) {
+                await deleteCachedProfile(user.x_username).catch(() => { }); // fire and forget
+            }
+
+            const msg = "✅ *Account Data Wiped.*\n\nYour X API keys, settings, and profile cache have been permanently deleted from our secure database. Use /setup if you ever wish to reconnect.";
             await ctx.reply(msg, { parse_mode: "Markdown" });
             ctx.session.buffer = []; // Clear short-term memory too
         } catch (err) {
