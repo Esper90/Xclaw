@@ -4,7 +4,7 @@ import { config } from "../../config";
 const ai = new GoogleGenerativeAI(config.GEMINI_API_KEY);
 
 /**
- * Sends a base64 encoded image to Gemini 1.5 Flash to generate a detailed description
+ * Sends a base64 encoded image to Gemini 3 Flash Preview to generate a detailed description
  * suitable for long-term Pinecone memory storage.
  */
 export async function describePhotoForMemory(

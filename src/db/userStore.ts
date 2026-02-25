@@ -45,6 +45,8 @@ export interface UserRecord {
     is_banned?: boolean;
     /** User's unique AES-256-GCM key encrypted by PINECONE_MASTER_KEY */
     encrypted_pinecone_key?: string | null;
+    /** User's preferred AI model: 'grok' (default) or 'gemini' */
+    preferred_ai?: 'grok' | 'gemini' | null;
     created_at?: string;
 }
 

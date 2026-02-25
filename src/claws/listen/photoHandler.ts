@@ -14,7 +14,7 @@ const DOWNLOADS_DIR = path.join(os.tmpdir(), "gc-photo");
 /**
  * Handle incoming photos from the user.
  * 1. Download the highest resolution photo from Telegram
- * 2. Send it to Gemini Vision for a detailed semantic description
+ * 2. Send it to Gemini Vision 3 Flash Preview for a detailed semantic description
  * 3. Save the resulting text to Pinecone memory
  * 4. Reply with a confirmation/summary
  */

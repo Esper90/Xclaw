@@ -15,7 +15,11 @@ async function buildSettingsKeyboard(telegramId: number) {
     // Determine Heartbeat status depending on if there's a file for them
     const heartbeatStatus = hasHeartbeatSettings(String(telegramId));
 
+    const currentAi = user.preferred_ai || "grok";
+    const aiDisplay = currentAi === "grok" ? "Grok 4.1" : "Gemini 3 Flash";
+
     const keyboard = new InlineKeyboard()
+        .text(`🧠 AI Provider: ${aiDisplay}`, "settings:toggle_ai").row()
         .text(`🌍 Timezone: ${user.timezone || "Not Set"}`, "settings:set_timezone").row()
         .text(`💓 Proactive Heartbeat: ${heartbeatStatus ? "ON" : "OFF"}`, "settings:toggle_heartbeat").row()
         .text(`📭 DM Allowlist: ${user.dm_allowlist ? "Custom" : "All/Default"}`, "settings:set_dm_allowlist").row()
@@ -71,6 +75,23 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
         // Re-render keyboard
         const newKeyboard = await buildSettingsKeyboard(telegramId);
         await ctx.editMessageReplyMarkup({ reply_markup: newKeyboard }).catch(() => { });
+        return;
+    }
+
+    if (data === "settings:toggle_ai") {
+        const user = await getUser(telegramId);
+        if (user) {
+            const currentAi = user.preferred_ai || "grok";
+            user.preferred_ai = currentAi === "grok" ? "gemini" : "grok";
+            await upsertUser(user);
+            await ctx.answerCallbackQuery({ text: `AI Provider set to ${user.preferred_ai === "grok" ? "Grok" : "Gemini"}` });
+
+            // Re-render keyboard
+            const newKeyboard = await buildSettingsKeyboard(telegramId);
+            await ctx.editMessageReplyMarkup({ reply_markup: newKeyboard }).catch(() => { });
+        } else {
+            await ctx.answerCallbackQuery({ text: "Error: User not found." });
+        }
         return;
     }
 
