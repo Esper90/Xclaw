@@ -680,29 +680,15 @@ export async function handleText(
     }
 
     // 3. Build system prompt
-    const systemPrompt = getCorePrompt(userId) + memorySuffix;
+    const systemPrompt = (await getCorePrompt(userId)) + memorySuffix;
     const history = bufferToHistory(ctx.session.buffer.slice(0, -1));
     const tools = registry.toGeminiTools();
 
     // 4. Call AI model
-    const reply = await routeToModel(systemPrompt, history, userMessage, tools);
+    const reply = await routeToModel(systemPrompt, history, userMessage, tools, (name, args) => registry.dispatch(name, args, { ctx, userId }), { userId });
 
-    // 5. Handle tool calls if present
-    let finalText = reply.text;
-    if (reply.toolCalls && reply.toolCalls.length > 0) {
-        const toolResults: string[] = [];
-        for (const tc of reply.toolCalls) {
-            const result = await registry.dispatch(tc.name, tc.args, { ctx, userId });
-            toolResults.push(`[${tc.name}]: ${result}`);
-        }
-        const followUp = await routeToModel(
-            systemPrompt,
-            history,
-            `Tool results:\n${toolResults.join("\n")}\n\nUser's original request: ${userMessage}`,
-            []
-        );
-        finalText = followUp.text;
-    }
+    // 5. Handle tool calls if present (handled inside routeToModel for Gemini/Grok)
+    const finalText = reply.text;
 
     // 6. Update buffer with model reply
     ctx.session.buffer = addToBuffer(ctx.session.buffer, "model", finalText);

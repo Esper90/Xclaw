@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 import { registry, type McpTool } from "./registry";
-import { getUserXClient } from "../../db/getUserClient";
-import { checkAndConsumeXBudget } from "../sense/apiBudget";
+import { getUserXClient } from "../../../db/getUserClient";
+import { checkAndConsumeXBudget } from "../../sense/apiBudget";
 import { config } from "../../../config";
 
 /**
