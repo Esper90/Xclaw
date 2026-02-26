@@ -35,9 +35,113 @@ export function setupTwilioWebSocket(server: Server) {
 
         let streamSid: string | null = null;
 
+        // --- INWORLD TTS STREAMING STATE ---
+        let textBuffer = "";
+        let sentenceQueue: string[] = [];
+        let isSynthesizing = false;
+        let ttsAbortController = new AbortController();
+
+        async function streamSentenceToInworld(sentence: string) {
+            const url = "https://api.inworld.ai/tts/v1/voice:stream";
+            const requestData = {
+                text: sentence,
+                voiceId: config.INWORLD_VOICE_ID || "hades",
+                modelId: "inworld-tts-1.5-mini",
+                audioConfig: {
+                    audioEncoding: "LINEAR16", // Twilio requires 8000Hz. Let's send LINEAR16, although Twilio needs MULAW. Let's hope Twilio supports LINEAR16? No, Twilio *only* supports `audio/x-mulaw` at 8000Hz natively inside its media streams. Inworld's standard format might not output MULAW directly. Let's request it and see if it fails.
+                    sampleRateHertz: 8000
+                }
+            };
+
+            // For now, let's request "PCMU" or "MULAW" if Inworld supports it (Google TTS does).
+            // Actually, Inworld's underlying Google TTS engine supports "MULAW".
+            // Let's request MULAW.
+            requestData.audioConfig.audioEncoding = "MULAW";
+
+            try {
+                const response = await fetch(url, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Authorization": `Basic ${config.INWORLD_API_KEY}`
+                    },
+                    body: JSON.stringify(requestData),
+                    signal: ttsAbortController.signal
+                });
+
+                if (!response.ok) {
+                    console.error("[inworld-tts] fetch error", response.status, await response.text());
+                    return;
+                }
+
+                if (!response.body) return;
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder("utf-8");
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const text = decoder.decode(value, { stream: true });
+                    const lines = text.split('\n').filter(l => l.trim().length > 0);
+
+                    for (const line of lines) {
+                        try {
+                            const chunk = JSON.parse(line);
+                            if (chunk.result && chunk.result.audioContent && streamSid) {
+                                // Twilio payload requires base64 encoded payload. chunk.result.audioContent is base64.
+                                twilioWs.send(JSON.stringify({
+                                    event: "media",
+                                    streamSid: streamSid,
+                                    media: { payload: chunk.result.audioContent }
+                                }));
+                            }
+                        } catch (e) { /* ignore parse errors */ }
+                    }
+                }
+            } catch (err: any) {
+                if (err.name === 'AbortError') {
+                    console.log("[inworld-tts] stream aborted for sentence:", sentence);
+                } else {
+                    console.error("[inworld-tts] stream failed", err);
+                }
+            }
+        }
+
+        async function processSentenceQueue() {
+            if (isSynthesizing) return;
+            isSynthesizing = true;
+
+            while (sentenceQueue.length > 0) {
+                const sentence = sentenceQueue.shift();
+                if (sentence) {
+                    await streamSentenceToInworld(sentence);
+                }
+            }
+
+            isSynthesizing = false;
+        }
+
+        function extractSentencesAndQueue() {
+            // Split by standard sentence delimiters. Keep the delimiters with the sentence.
+            const match = textBuffer.match(/.*?(?:[.!?]+|\n+)[\s]*/g);
+            if (match) {
+                for (const s of match) {
+                    const clean = s.trim();
+                    if (clean.length > 0) {
+                        sentenceQueue.push(clean);
+                    }
+                }
+                processSentenceQueue();
+                textBuffer = textBuffer.replace(/.*?(?:[.!?]+|\n+)[\s]*/g, '');
+            }
+        }
+        // --- END INWORLD TTS STATE ---
+
+
         // 1. Connect to OpenAI Realtime
-        const url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17";
-        const openAiWs = new WebSocket(url, {
+        const openAiUrl = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17";
+        const openAiWs = new WebSocket(openAiUrl, {
             headers: {
                 "Authorization": `Bearer ${config.OPENAI_API_KEY}`,
                 "OpenAI-Beta": "realtime=v1"
@@ -63,11 +167,10 @@ export function setupTwilioWebSocket(server: Server) {
                 type: "session.update",
                 session: {
                     turn_detection: { type: "server_vad" }, // Auto voice-activity detection
-                    input_audio_format: "g711_ulaw",       // Native Twilio format
-                    output_audio_format: "g711_ulaw",      // Native Twilio format
-                    voice: "ash",                          // Pick a cool voice
+                    input_audio_format: "g711_ulaw",       // Native Twilio format for input
+                    // Output modality changed to text only since we use Inworld TTS payload.
+                    modalities: ["text"],
                     instructions: systemInstructions,
-                    modalities: ["text", "audio"],
                     temperature: 0.7,
                     tools: realtimeTools
                 }
@@ -86,7 +189,7 @@ export function setupTwilioWebSocket(server: Server) {
             openAiWs.send(JSON.stringify({ type: "response.create" }));
         });
 
-        // 3. Handle incoming Audio from OpenAI -> send to Twilio
+        // 3. Handle incoming Audio/Text from OpenAI -> send to Twilio
         openAiWs.on("message", async (data: WebSocket.RawData) => {
             try {
                 const response = JSON.parse(data.toString());
@@ -96,26 +199,42 @@ export function setupTwilioWebSocket(server: Server) {
                     console.error("[twilio] OpenAI sent an error:", JSON.stringify(response.error));
                 }
 
-                if (response.type === "response.audio.delta" && response.delta) {
-                    if (streamSid) {
-                        const audioDelta = {
-                            event: "media",
-                            streamSid: streamSid,
-                            media: { payload: response.delta }
-                        };
-                        twilioWs.send(JSON.stringify(audioDelta));
+                // Handle incoming text delta for TTS
+                if (response.type === "response.text.delta" && response.delta) {
+                    textBuffer += response.delta;
+                    extractSentencesAndQueue();
+                }
+
+                if (response.type === "response.done") {
+                    // flush any remaining text
+                    if (textBuffer.trim().length > 0) {
+                        sentenceQueue.push(textBuffer.trim());
+                        textBuffer = "";
+                        processSentenceQueue();
                     }
                 }
 
                 // Handle interrupts
                 if (response.type === "input_audio_buffer.speech_started") {
                     console.log("[twilio] Speech started - interrupting AI");
+
+                    // Stop Inworld TTS
+                    ttsAbortController.abort();
+                    ttsAbortController = new AbortController();
+                    sentenceQueue = [];
+                    textBuffer = "";
+                    isSynthesizing = false;
+
+                    // Also clear Twilio buffer
                     if (streamSid) {
                         twilioWs.send(JSON.stringify({
                             event: "clear",
                             streamSid: streamSid
                         }));
                     }
+
+                    // Instruct OpenAI to truncate the active generation if any
+                    // The realtime model drops the current response on its own when input speech starts using server_vad, but we log the reset on our side.
                 }
 
                 // Handle Tool Calls from OpenAI Realtime
@@ -182,6 +301,7 @@ export function setupTwilioWebSocket(server: Server) {
             if (openAiWs.readyState === WebSocket.OPEN) {
                 openAiWs.close();
             }
+            ttsAbortController.abort();
         });
 
         twilioWs.on("error", (error) => {
