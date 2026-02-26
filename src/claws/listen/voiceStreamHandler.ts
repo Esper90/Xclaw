@@ -91,12 +91,13 @@ export function setupTwilioWebSocket(server: Server) {
                             streamSid: streamSid as string,
                             media: { payload: packet.toString('base64') }
                         }));
+                        // console.log("[tts] PKT_SENT");
                     }
 
                     lastPacketTime += 20;
                     setTimeout(playNext, Math.max(0, lastPacketTime - Date.now()));
-                } else if (isProcessingQueue) {
-                    // Buffer empty but still expecting more audio
+                } else if (isProcessingQueue || audioBuffer.length > 0) {
+                    // Stay alive if still synthesizing OR if we have fragments left
                     setTimeout(playNext, 10);
                 } else {
                     console.log("[tts] Playback finished, buffer dry");
@@ -118,8 +119,10 @@ export function setupTwilioWebSocket(server: Server) {
         }
 
         async function streamSentenceToInworld(sentence: string) {
-            console.log(`[tts] Synthesizing: "${sentence}"`);
-            const url = "https://api.inworld.ai/tts/v1/voice:stream";
+            console.log(`[tts] FETCH_START: "${sentence}"`);
+            const streamingUrl = "https://api.inworld.ai/tts/v1/voice:stream";
+            const fallbackUrl = "https://api.inworld.ai/tts/v1/voice";
+
             const requestData: any = {
                 text: sentence,
                 voiceId: config.INWORLD_VOICE_ID || "Hades",
@@ -131,7 +134,7 @@ export function setupTwilioWebSocket(server: Server) {
             };
 
             try {
-                const response = await fetch(url, {
+                const response = await fetch(streamingUrl, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
@@ -142,19 +145,27 @@ export function setupTwilioWebSocket(server: Server) {
                 });
 
                 if (!response.ok) {
-                    console.error("[inworld-tts] stream error", response.status, await response.text());
+                    console.error("[inworld-tts] fetch error", response.status, await response.text());
                     return;
                 }
 
-                if (!response.body) return;
+                if (!response.body) {
+                    console.error("[inworld-tts] No response body");
+                    return;
+                }
 
+                const reader = (response.body as any).getReader();
                 const decoder = new TextDecoder();
-                let buffer = "";
+                let partialLine = "";
+                let chunksReceived = 0;
 
-                for await (const chunk of (response.body as any)) {
-                    buffer += decoder.decode(chunk, { stream: true });
-                    const lines = buffer.split("\n");
-                    buffer = lines.pop() || "";
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const text = decoder.decode(value, { stream: true });
+                    const lines = (partialLine + text).split("\n");
+                    partialLine = lines.pop() || "";
 
                     for (const line of lines) {
                         if (!line.trim()) continue;
@@ -162,25 +173,52 @@ export function setupTwilioWebSocket(server: Server) {
                             const data = JSON.parse(line);
                             if (data.audioContent) {
                                 let bin = Buffer.from(data.audioContent, 'base64');
-
                                 if (bin.toString('ascii', 0, 4) === 'RIFF') {
                                     bin = bin.subarray(44);
                                 }
 
                                 if (bin.length > 0) {
-                                    // Ensure even alignment for PCM16 conversion
-                                    const paddedLen = bin.length - (bin.length % 2);
-                                    const pcm16 = new Int16Array(
-                                        bin.buffer,
-                                        bin.byteOffset,
-                                        paddedLen / 2
-                                    );
+                                    chunksReceived++;
+                                    // Use Buffer.from to ensure a fresh ArrayBuffer with 0 offset for Int16Array
+                                    const safeBin = Buffer.from(bin);
+                                    const pcm16 = new Int16Array(safeBin.buffer, safeBin.byteOffset, safeBin.length / 2);
                                     const mulawBytes = Buffer.from(mulaw.encode(pcm16));
                                     audioBuffer = Buffer.concat([audioBuffer, mulawBytes]);
                                     startPlaybackLoop();
                                 }
                             }
-                        } catch (e) { }
+                        } catch (e) {
+                            console.error("[inworld-tts] JSON parse error", e);
+                        }
+                    }
+                }
+
+                // Fallback if streaming returned no audio
+                if (chunksReceived === 0) {
+                    console.warn("[inworld-tts] Stream empty, trying fallback...");
+                    const fbRes = await fetch(fallbackUrl, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "Authorization": `Basic ${config.INWORLD_API_KEY}`
+                        },
+                        body: JSON.stringify(requestData),
+                        signal: ttsAbortController.signal
+                    });
+                    if (fbRes.ok) {
+                        const data = await fbRes.json();
+                        if (data.audioContent) {
+                            let bin = Buffer.from(data.audioContent, 'base64');
+                            if (bin.toString('ascii', 0, 4) === 'RIFF') bin = bin.subarray(44);
+                            const safeBin = Buffer.from(bin);
+                            const pcm16 = new Int16Array(safeBin.buffer, safeBin.byteOffset, safeBin.length / 2);
+                            const mulawBytes = Buffer.from(mulaw.encode(pcm16));
+                            audioBuffer = Buffer.concat([audioBuffer, mulawBytes]);
+                            startPlaybackLoop();
+                            console.log("[inworld-tts] Fallback success");
+                        }
+                    } else {
+                        console.error("[inworld-tts] Fallback failed", fbRes.status);
                     }
                 }
 
