@@ -15,6 +15,7 @@
     "@inworld/nodejs-sdk": "^1.17.0",
     "@pinecone-database/pinecone": "^4.0.0",
     "@supabase/supabase-js": "^2.97.0",
+    "alawmulaw": "^6.0.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "grammy": "^1.31.0",

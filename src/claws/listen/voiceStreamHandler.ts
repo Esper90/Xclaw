@@ -1,5 +1,6 @@
 import { Server as WsServer } from "ws";
 import WebSocket from "ws";
+import { mulaw } from "alawmulaw";
 import { Server } from "http";
 import { config } from "../../config";
 import { getCorePrompt } from "../archive/corePrompt";
@@ -47,16 +48,10 @@ export function setupTwilioWebSocket(server: Server) {
                 text: sentence,
                 voiceId: config.INWORLD_VOICE_ID || "Hades",
                 audioConfig: {
-                    audioEncoding: "MULAW",
+                    audioEncoding: "LINEAR16",
                     sampleRateHertz: 8000
                 }
             };
-
-
-            // For now, let's request "PCMU" or "MULAW" if Inworld supports it (Google TTS does).
-            // Actually, Inworld's underlying Google TTS engine supports "MULAW".
-            // Let's request MULAW.
-            requestData.audioConfig.audioEncoding = "MULAW";
 
             try {
                 const response = await fetch(url, {
@@ -86,34 +81,55 @@ export function setupTwilioWebSocket(server: Server) {
                     fullResponse = Buffer.concat([fullResponse, Buffer.from(value)]);
                 }
 
-                // Dynamically extract the pure MULAW bytes from the WAV container.
-                // MULAW 'fact' chunks often make the header 58+ bytes instead of the standard 44.
-                function extractRawAudioFromWav(buffer: Buffer): Buffer {
+                // Dynamically extract the pure PCM16 bytes from the WAV container and transcode to Twilio MULAW
+                function extractAndConvertToMulaw(fullWavBuffer: Buffer): Buffer {
                     let offset = 12; // Skip 'RIFF' + total size + 'WAVE'
-                    while (offset + 8 <= buffer.length) {
-                        const chunkId = buffer.toString('ascii', offset, offset + 4);
-                        const chunkSize = buffer.readUInt32LE(offset + 4);
+                    while (offset + 8 <= fullWavBuffer.length) {
+                        const chunkId = fullWavBuffer.toString('ascii', offset, offset + 4);
+                        const chunkSize = fullWavBuffer.readUInt32LE(offset + 4);
                         if (chunkId === 'data') {
-                            return buffer.subarray(offset + 8, offset + 8 + chunkSize);
+                            const pcm16Buffer = fullWavBuffer.subarray(offset + 8, offset + 8 + chunkSize);
+                            // Convert Buffer -> Int16Array for alawmulaw
+                            const pcm16Array = new Int16Array(
+                                pcm16Buffer.buffer,
+                                pcm16Buffer.byteOffset,
+                                pcm16Buffer.length / 2
+                            );
+                            // Convert PCM16 -> raw u-law so Twilio stops dropping our packets
+                            return Buffer.from(mulaw.encode(pcm16Array));
                         }
                         offset += 8 + chunkSize + (chunkSize % 2); // Pad to even byte boundary
                     }
-                    // Fallback to naive 44-byte header if 'data' chunk is somehow missing
-                    return buffer.subarray(44);
+                    throw new Error('No data chunk found in LINEAR16 WAV container');
                 }
 
-                const rawMulaw = extractRawAudioFromWav(fullResponse);
+                const rawMulaw = extractAndConvertToMulaw(fullResponse);
 
                 // Twilio loves small, paced packets (usually 20ms = 160 bytes for 8000Hz 8-bit).
-                // Burst-dumping the entire array at once causes Twilio to mute the connection.
+                // Burst-dumping causes muting. Non-drifting pacing is required for long sentences.
                 if (streamSid) {
                     const PACKET_SIZE = 160;
                     let offset = 0;
+                    const startTime = Date.now();
 
                     const sendNextPacket = () => {
                         // Stop playing this sentence if the user just interrupted
                         if (ttsAbortController.signal.aborted) return;
-                        if (offset >= rawMulaw.length) return;
+
+                        if (offset >= rawMulaw.length) {
+                            // Send a short silence tail so Twilio's buffer doesn't aggressively cut off the last word
+                            const silence = Buffer.alloc(PACKET_SIZE, 0xff);
+                            for (let i = 0; i < 8; i++) {
+                                if (twilioWs.readyState === WebSocket.OPEN) {
+                                    twilioWs.send(JSON.stringify({
+                                        event: 'media',
+                                        streamSid: streamSid as string,
+                                        media: { payload: silence.toString('base64') }
+                                    }));
+                                }
+                            }
+                            return;
+                        }
 
                         const chunk = rawMulaw.subarray(offset, Math.min(offset + PACKET_SIZE, rawMulaw.length));
                         if (twilioWs.readyState === WebSocket.OPEN) {
@@ -125,7 +141,8 @@ export function setupTwilioWebSocket(server: Server) {
                         }
 
                         offset += PACKET_SIZE;
-                        setTimeout(sendNextPacket, 20); // 20ms real-time pacing
+                        const nextTime = startTime + (offset / 8); // exact ms (160 bytes / 8 bytes/ms = 20ms)
+                        setTimeout(sendNextPacket, Math.max(0, nextTime - Date.now()));
                     };
 
                     sendNextPacket();
