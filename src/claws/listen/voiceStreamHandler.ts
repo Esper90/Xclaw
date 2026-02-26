@@ -65,12 +65,28 @@ export function setupTwilioWebSocket(server: Server) {
                 }
             };
             openAiWs.send(JSON.stringify(sessionUpdate));
+
+            // Force the AI to speak first so it says "Hello!" when they answer
+            openAiWs.send(JSON.stringify({
+                type: "conversation.item.create",
+                item: {
+                    type: "message",
+                    role: "user",
+                    content: [{ type: "input_text", text: "Answer the phone with a short greeting." }]
+                }
+            }));
+            openAiWs.send(JSON.stringify({ type: "response.create" }));
         });
 
         // 3. Handle incoming Audio from OpenAI -> send to Twilio
         openAiWs.on("message", async (data: WebSocket.RawData) => {
             try {
                 const response = JSON.parse(data.toString());
+
+                // Debug log any errors from OpenAI
+                if (response.type === "error") {
+                    console.error("[twilio] OpenAI sent an error:", JSON.stringify(response.error));
+                }
 
                 if (response.type === "response.audio.delta" && response.delta) {
                     if (streamSid) {
