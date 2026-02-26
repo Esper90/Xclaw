@@ -105,18 +105,19 @@ export function setupTwilioWebSocket(server: Server) {
                 // Twilio loves small, paced packets (usually 20ms = 160 bytes for 8000Hz 8-bit).
                 // Burst-dumping causes muting. Non-drifting pacing is required for long sentences.
                 if (streamSid) {
-                    const PACKET_SIZE = 160;
+                    const PACKET_SIZE = 320; // 40ms packets (320 bytes / 8 bytes/ms)
                     let offset = 0;
                     const startTime = Date.now();
 
                     const sendNextPacket = () => {
-                        // Stop playing this sentence if the user just interrupted
                         if (ttsAbortController.signal.aborted) return;
 
                         if (offset >= rawMulaw.length) {
-                            // Send a short silence tail so Twilio's buffer doesn't aggressively cut off the last word
+                            // Send a short silence tail (0.5s) to prevent clipping, PACED correctly
                             const silence = Buffer.alloc(PACKET_SIZE, 0xff);
-                            for (let i = 0; i < 8; i++) {
+                            let silenceCount = 0;
+                            const sendSilence = () => {
+                                if (ttsAbortController.signal.aborted || silenceCount >= 10) return;
                                 if (twilioWs.readyState === WebSocket.OPEN) {
                                     twilioWs.send(JSON.stringify({
                                         event: 'media',
@@ -124,7 +125,10 @@ export function setupTwilioWebSocket(server: Server) {
                                         media: { payload: silence.toString('base64') }
                                     }));
                                 }
-                            }
+                                silenceCount++;
+                                setTimeout(sendSilence, 40);
+                            };
+                            sendSilence();
                             return;
                         }
 
@@ -138,7 +142,7 @@ export function setupTwilioWebSocket(server: Server) {
                         }
 
                         offset += PACKET_SIZE;
-                        const nextTime = startTime + (offset / 8); // exact ms (160 bytes / 8 bytes/ms = 20ms)
+                        const nextTime = startTime + (offset / 8);
                         setTimeout(sendNextPacket, Math.max(0, nextTime - Date.now()));
                     };
 
@@ -169,17 +173,17 @@ export function setupTwilioWebSocket(server: Server) {
         }
 
         function extractSentencesAndQueue() {
-            // Split by standard sentence delimiters. Keep the delimiters with the sentence.
-            const match = textBuffer.match(/.*?(?:[.!?]+|\n+)[\s]*/g);
+            // Delimit by period, exclamation, question mark, or comma (for faster turnaround)
+            const match = textBuffer.match(/.*?(?:[.!?]+|\n+|,|\s{2,})[\s]*/g);
             if (match) {
                 for (const s of match) {
                     const clean = s.trim();
-                    if (clean.length > 0) {
+                    if (clean.length > 5) { // Avoid tiny 1-2 char fragments after commas
                         sentenceQueue.push(clean);
                     }
                 }
                 processSentenceQueue();
-                textBuffer = textBuffer.replace(/.*?(?:[.!?]+|\n+)[\s]*/g, '');
+                textBuffer = textBuffer.replace(/.*?(?:[.!?]+|\n+|,|\s{2,})[\s]*/g, '');
             }
         }
         // --- END INWORLD TTS STATE ---
