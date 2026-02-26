@@ -43,10 +43,11 @@ export function setupTwilioWebSocket(server: Server) {
         let ttsAbortController = new AbortController();
 
         async function streamSentenceToInworld(sentence: string) {
-            const url = "https://api.inworld.ai/v2/tts:synthesize-speech";
+            const url = "https://api.inworld.ai/tts/v1/voice";
             const requestData: any = {
                 text: sentence,
                 voiceId: config.INWORLD_VOICE_ID || "Hades",
+                modelId: "inworld-tts-1.5-mini",
                 audioConfig: {
                     audioEncoding: "LINEAR16",
                     sampleRateHertz: 8000
@@ -69,17 +70,13 @@ export function setupTwilioWebSocket(server: Server) {
                     return;
                 }
 
-                if (!response.body) return;
-
-                // Accumulate the entire WAV response from this sentence (Inworld V2 streams it very quickly)
-                const reader = response.body.getReader();
-                let fullResponse = Buffer.alloc(0);
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    fullResponse = Buffer.concat([fullResponse, Buffer.from(value)]);
+                const result = await response.json();
+                if (!result.audioContent) {
+                    console.error("[inworld-tts] No audioContent returned");
+                    return;
                 }
+
+                const fullResponse = Buffer.from(result.audioContent, 'base64');
 
                 // Dynamically extract the pure PCM16 bytes from the WAV container and transcode to Twilio MULAW
                 function extractAndConvertToMulaw(fullWavBuffer: Buffer): Buffer {
@@ -199,28 +196,6 @@ export function setupTwilioWebSocket(server: Server) {
 
         openAiWs.on("open", async () => {
             console.log("[twilio] Connected to OpenAI Realtime API");
-
-            // --- TONE TEST (Diagnostic 1) ---
-            if (streamSid) {
-                console.log("[twilio] Running 3-second tone test for streamSid:", streamSid);
-                const numSamples = 8000 * 3;
-                const pcm = new Int16Array(numSamples);
-                for (let i = 0; i < numSamples; i++) {
-                    pcm[i] = Math.floor(32767 * Math.sin(2 * Math.PI * 440 * (i / 8000)) * 0.4);
-                }
-                const toneMulaw = Buffer.from(mulaw.encode(pcm));
-                const PACKET_SIZE = 160;
-                for (let offset = 0; offset < toneMulaw.length; offset += PACKET_SIZE) {
-                    const chunk = toneMulaw.subarray(offset, Math.min(offset + PACKET_SIZE, toneMulaw.length));
-                    twilioWs.send(JSON.stringify({
-                        event: "media",
-                        streamSid: streamSid,
-                        media: { payload: chunk.toString('base64') }
-                    }));
-                }
-                console.log("[twilio] Tone test payload sent");
-            }
-            // --- END TONE TEST ---
 
             // 2. Fetch context and inject System Prompt alongside translated Tools
             const systemInstructions = await getCorePrompt(DEFAULT_USER_ID);
