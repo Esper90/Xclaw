@@ -76,46 +76,61 @@ export function setupTwilioWebSocket(server: Server) {
 
                 if (!response.body) return;
 
-                // The V2 endpoint returns a raw binary WAV file stream (with MULAW encoding).
-                // Twilio needs raw MULAW bytes (without the 44-byte WAV header), encoded in base64.
+                // Accumulate the entire WAV response from this sentence (Inworld V2 streams it very quickly)
                 const reader = response.body.getReader();
-                let isFirstChunk = true;
-                let headerBuffer = Buffer.alloc(0);
+                let fullResponse = Buffer.alloc(0);
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
-
-                    let chunk = Buffer.from(value);
-
-                    if (isFirstChunk) {
-                        // We need to accumulate enough bytes to strip the 44-byte WAV header
-                        headerBuffer = Buffer.concat([headerBuffer, chunk]);
-                        if (headerBuffer.length >= 44) {
-                            isFirstChunk = false;
-                            // The first 4 bytes should be "RIFF"
-                            if (headerBuffer.subarray(0, 4).toString('utf8') === 'RIFF') {
-                                chunk = headerBuffer.subarray(44); // Skip the WAV header
-                            } else {
-                                // Not a WAV file? Unlikely given Inworld API, but just stream it.
-                                chunk = headerBuffer;
-                            }
-                            // Clear it to free memory
-                            headerBuffer = Buffer.alloc(0);
-                        } else {
-                            // Not enough bytes for a header yet, wait for next read
-                            continue;
-                        }
-                    }
-
-                    if (chunk.length > 0 && streamSid) {
-                        twilioWs.send(JSON.stringify({
-                            event: "media",
-                            streamSid: streamSid,
-                            media: { payload: chunk.toString('base64') }
-                        }));
-                    }
+                    fullResponse = Buffer.concat([fullResponse, Buffer.from(value)]);
                 }
+
+                // Dynamically extract the pure MULAW bytes from the WAV container.
+                // MULAW 'fact' chunks often make the header 58+ bytes instead of the standard 44.
+                function extractRawAudioFromWav(buffer: Buffer): Buffer {
+                    let offset = 12; // Skip 'RIFF' + total size + 'WAVE'
+                    while (offset + 8 <= buffer.length) {
+                        const chunkId = buffer.toString('ascii', offset, offset + 4);
+                        const chunkSize = buffer.readUInt32LE(offset + 4);
+                        if (chunkId === 'data') {
+                            return buffer.subarray(offset + 8, offset + 8 + chunkSize);
+                        }
+                        offset += 8 + chunkSize + (chunkSize % 2); // Pad to even byte boundary
+                    }
+                    // Fallback to naive 44-byte header if 'data' chunk is somehow missing
+                    return buffer.subarray(44);
+                }
+
+                const rawMulaw = extractRawAudioFromWav(fullResponse);
+
+                // Twilio loves small, paced packets (usually 20ms = 160 bytes for 8000Hz 8-bit).
+                // Burst-dumping the entire array at once causes Twilio to mute the connection.
+                if (streamSid) {
+                    const PACKET_SIZE = 160;
+                    let offset = 0;
+
+                    const sendNextPacket = () => {
+                        // Stop playing this sentence if the user just interrupted
+                        if (ttsAbortController.signal.aborted) return;
+                        if (offset >= rawMulaw.length) return;
+
+                        const chunk = rawMulaw.subarray(offset, Math.min(offset + PACKET_SIZE, rawMulaw.length));
+                        if (twilioWs.readyState === WebSocket.OPEN) {
+                            twilioWs.send(JSON.stringify({
+                                event: "media",
+                                streamSid: streamSid,
+                                media: { payload: chunk.toString('base64') }
+                            }));
+                        }
+
+                        offset += PACKET_SIZE;
+                        setTimeout(sendNextPacket, 20); // 20ms real-time pacing
+                    };
+
+                    sendNextPacket();
+                }
+
             } catch (err: any) {
                 if (err.name === 'AbortError') {
                     console.log("[inworld-tts] stream aborted for sentence:", sentence);
