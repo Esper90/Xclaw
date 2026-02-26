@@ -76,27 +76,44 @@ export function setupTwilioWebSocket(server: Server) {
 
                 if (!response.body) return;
 
+                // The V2 endpoint returns a raw binary WAV file stream (with MULAW encoding).
+                // Twilio needs raw MULAW bytes (without the 44-byte WAV header), encoded in base64.
                 const reader = response.body.getReader();
-                const decoder = new TextDecoder("utf-8");
+                let isFirstChunk = true;
+                let headerBuffer = Buffer.alloc(0);
+
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    const text = decoder.decode(value, { stream: true });
-                    const lines = text.split('\n').filter(l => l.trim().length > 0);
+                    let chunk = Buffer.from(value);
 
-                    for (const line of lines) {
-                        try {
-                            const chunk = JSON.parse(line);
-                            if (chunk.result && chunk.result.audioContent && streamSid) {
-                                // Twilio payload requires base64 encoded payload. chunk.result.audioContent is base64.
-                                twilioWs.send(JSON.stringify({
-                                    event: "media",
-                                    streamSid: streamSid,
-                                    media: { payload: chunk.result.audioContent }
-                                }));
+                    if (isFirstChunk) {
+                        // We need to accumulate enough bytes to strip the 44-byte WAV header
+                        headerBuffer = Buffer.concat([headerBuffer, chunk]);
+                        if (headerBuffer.length >= 44) {
+                            isFirstChunk = false;
+                            // The first 4 bytes should be "RIFF"
+                            if (headerBuffer.subarray(0, 4).toString('utf8') === 'RIFF') {
+                                chunk = headerBuffer.subarray(44); // Skip the WAV header
+                            } else {
+                                // Not a WAV file? Unlikely given Inworld API, but just stream it.
+                                chunk = headerBuffer;
                             }
-                        } catch (e) { /* ignore parse errors */ }
+                            // Clear it to free memory
+                            headerBuffer = Buffer.alloc(0);
+                        } else {
+                            // Not enough bytes for a header yet, wait for next read
+                            continue;
+                        }
+                    }
+
+                    if (chunk.length > 0 && streamSid) {
+                        twilioWs.send(JSON.stringify({
+                            event: "media",
+                            streamSid: streamSid,
+                            media: { payload: chunk.toString('base64') }
+                        }));
                     }
                 }
             } catch (err: any) {
