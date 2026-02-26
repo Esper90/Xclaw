@@ -59,7 +59,15 @@ export interface SessionData {
     /** Whether to reply with a voice note */
     voiceEnabled: boolean;
     /** For Settings Menu inputs */
-    awaitingSettingInput?: "timezone" | "dm_allowlist" | "mention_allowlist";
+    awaitingSettingInput?:
+        | "timezone"
+        | "dm_allowlist"
+        | "mention_allowlist"
+        | "weather"
+        | "vip_list"
+        | "vibe_freq"
+        | "wishlist"
+        | "repos";
     /** Whether to receive proactive heartbeat messages */
     heartbeatEnabled: boolean;
     /** Whether voice inputs should be transcribed and saved without an AI reply */
