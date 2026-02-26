@@ -52,7 +52,7 @@ export function setupTwilioWebSocket(server: Server) {
             const openAiTools = translateTools(registry.toGeminiTools()) || [];
 
             // The Realtime API expects a flat tool structure, unlike the Chat Completions API
-            const realtimeTools = openAiTools.map(t => ({
+            const realtimeTools = openAiTools.map((t: any) => ({
                 type: "function",
                 name: t.function.name,
                 description: t.function.description || "",
