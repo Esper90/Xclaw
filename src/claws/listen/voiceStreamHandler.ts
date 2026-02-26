@@ -51,6 +51,14 @@ export function setupTwilioWebSocket(server: Server) {
             const systemInstructions = await getCorePrompt(DEFAULT_USER_ID);
             const openAiTools = translateTools(registry.toGeminiTools()) || [];
 
+            // The Realtime API expects a flat tool structure, unlike the Chat Completions API
+            const realtimeTools = openAiTools.map(t => ({
+                type: "function",
+                name: t.function.name,
+                description: t.function.description || "",
+                parameters: t.function.parameters
+            }));
+
             const sessionUpdate = {
                 type: "session.update",
                 session: {
@@ -61,7 +69,7 @@ export function setupTwilioWebSocket(server: Server) {
                     instructions: systemInstructions,
                     modalities: ["text", "audio"],
                     temperature: 0.7,
-                    tools: openAiTools
+                    tools: realtimeTools
                 }
             };
             openAiWs.send(JSON.stringify(sessionUpdate));
@@ -101,6 +109,7 @@ export function setupTwilioWebSocket(server: Server) {
 
                 // Handle interrupts
                 if (response.type === "input_audio_buffer.speech_started") {
+                    console.log("[twilio] Speech started - interrupting AI");
                     if (streamSid) {
                         twilioWs.send(JSON.stringify({
                             event: "clear",
