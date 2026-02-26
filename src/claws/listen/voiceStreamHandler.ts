@@ -39,11 +39,102 @@ export function setupTwilioWebSocket(server: Server) {
         // --- INWORLD TTS STREAMING STATE ---
         let textBuffer = "";
         let sentenceQueue: string[] = [];
-        let isSynthesizing = false;
+        let itemQueue: Buffer[] = []; // Queue of raw MULAW chunks
+        let isProcessingQueue = false;
         let ttsAbortController = new AbortController();
+        let playbackActive = false;
+        let lastPacketTime = 0;
+
+        /**
+         * The Audio Worker: Pulls packets from itemQueue and sends to Twilio at exactly 20ms intervals.
+         * Ensures no gaps between sentences and no overlapping audio.
+         */
+        function startPlaybackLoop() {
+            if (playbackActive || !streamSid) return;
+            playbackActive = true;
+
+            const PACKET_SIZE = 160;
+
+            // Start burst: Send 3 packets (60ms) immediately to prime Twilio's buffer
+            for (let i = 0; i < 3; i++) {
+                if (itemQueue.length > 0) {
+                    const firstChunk = itemQueue[0];
+                    const packet = firstChunk.subarray(0, PACKET_SIZE);
+                    if (packet.length < PACKET_SIZE) {
+                        itemQueue.shift();
+                    } else {
+                        itemQueue[0] = firstChunk.subarray(PACKET_SIZE);
+                        if (itemQueue[0].length === 0) itemQueue.shift();
+                    }
+
+                    if (twilioWs.readyState === WebSocket.OPEN) {
+                        twilioWs.send(JSON.stringify({
+                            event: "media",
+                            streamSid: streamSid as string,
+                            media: { payload: packet.toString('base64') }
+                        }));
+                    }
+                }
+            }
+
+            lastPacketTime = Date.now();
+            const playNext = () => {
+                if (ttsAbortController.signal.aborted) {
+                    playbackActive = false;
+                    itemQueue = [];
+                    return;
+                }
+
+                // If we have data, send exactly 160 bytes
+                if (itemQueue.length > 0) {
+                    const firstChunk = itemQueue[0];
+                    const packet = firstChunk.subarray(0, PACKET_SIZE);
+
+                    if (packet.length < PACKET_SIZE) {
+                        // Current chunk is small, try to merge or just send it
+                        itemQueue.shift();
+                    } else {
+                        itemQueue[0] = firstChunk.subarray(PACKET_SIZE);
+                        if (itemQueue[0].length === 0) itemQueue.shift();
+                    }
+
+                    if (twilioWs.readyState === WebSocket.OPEN) {
+                        twilioWs.send(JSON.stringify({
+                            event: "media",
+                            streamSid: streamSid as string,
+                            media: { payload: packet.toString('base64') }
+                        }));
+                    }
+
+                    // Schedule next based on absolute time to prevent drift
+                    lastPacketTime += 20;
+                    setTimeout(playNext, Math.max(0, lastPacketTime - Date.now()));
+                } else {
+                    // Buffer empty - wait briefly but keep loop alive if still synthesizing
+                    if (isProcessingQueue) {
+                        setTimeout(playNext, 10);
+                    } else {
+                        // Truly finished
+                        playbackActive = false;
+                        // Send small silence tail to flush Twilio buffer
+                        const silence = Buffer.alloc(PACKET_SIZE, 0xff);
+                        for (let i = 0; i < 5; i++) {
+                            if (twilioWs.readyState === WebSocket.OPEN) {
+                                twilioWs.send(JSON.stringify({
+                                    event: "media", streamSid: streamSid as string,
+                                    media: { payload: silence.toString('base64') }
+                                }));
+                            }
+                        }
+                    }
+                }
+            };
+
+            playNext();
+        }
 
         async function streamSentenceToInworld(sentence: string) {
-            const url = "https://api.inworld.ai/tts/v1/voice";
+            const url = "https://api.inworld.ai/tts/v1/voice:stream";
             const requestData: any = {
                 text: sentence,
                 voiceId: config.INWORLD_VOICE_ID || "Hades",
@@ -66,101 +157,61 @@ export function setupTwilioWebSocket(server: Server) {
                 });
 
                 if (!response.ok) {
-                    console.error("[inworld-tts] fetch error", response.status, await response.text());
+                    console.error("[inworld-tts] stream error", response.status, await response.text());
                     return;
                 }
 
-                const result = await response.json();
-                if (!result.audioContent) {
-                    console.error("[inworld-tts] No audioContent returned");
-                    return;
-                }
+                if (!response.body) return;
 
-                const fullResponse = Buffer.from(result.audioContent, 'base64');
+                const reader = (response.body as any).getReader();
+                const decoder = new TextDecoder();
+                let buffer = "";
 
-                // Dynamically extract the pure PCM16 bytes from the WAV container and transcode to Twilio MULAW
-                function extractAndConvertToMulaw(fullWavBuffer: Buffer): Buffer {
-                    let offset = 12; // Skip 'RIFF' + total size + 'WAVE'
-                    while (offset + 8 <= fullWavBuffer.length) {
-                        const chunkId = fullWavBuffer.toString('ascii', offset, offset + 4);
-                        const chunkSize = fullWavBuffer.readUInt32LE(offset + 4);
-                        if (chunkId === 'data') {
-                            const pcm16Buffer = fullWavBuffer.subarray(offset + 8, offset + 8 + chunkSize);
-                            // Convert Buffer -> Int16Array for alawmulaw
-                            const pcm16Array = new Int16Array(
-                                pcm16Buffer.buffer,
-                                pcm16Buffer.byteOffset,
-                                pcm16Buffer.length / 2
-                            );
-                            // Convert PCM16 -> raw u-law so Twilio stops dropping our packets
-                            return Buffer.from(mulaw.encode(pcm16Array));
-                        }
-                        offset += 8 + chunkSize + (chunkSize % 2); // Pad to even byte boundary
-                    }
-                    throw new Error('No data chunk found in LINEAR16 WAV container');
-                }
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
 
-                const rawMulaw = extractAndConvertToMulaw(fullResponse);
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split("\n");
+                    buffer = lines.pop() || "";
 
-                // Twilio loves small, paced packets (usually 20ms = 160 bytes for 8000Hz 8-bit).
-                // Burst-dumping causes muting. Non-drifting pacing is required for long sentences.
-                if (streamSid) {
-                    const PACKET_SIZE = 320; // 40ms packets (320 bytes / 8 bytes/ms)
-                    let offset = 0;
-                    const startTime = Date.now();
+                    for (const line of lines) {
+                        if (!line.trim()) continue;
+                        try {
+                            const data = JSON.parse(line);
+                            if (data.audioContent) {
+                                let bin = Buffer.from(data.audioContent, 'base64');
 
-                    const sendNextPacket = () => {
-                        if (ttsAbortController.signal.aborted) return;
-
-                        if (offset >= rawMulaw.length) {
-                            // Send a short silence tail (0.5s) to prevent clipping, PACED correctly
-                            const silence = Buffer.alloc(PACKET_SIZE, 0xff);
-                            let silenceCount = 0;
-                            const sendSilence = () => {
-                                if (ttsAbortController.signal.aborted || silenceCount >= 10) return;
-                                if (twilioWs.readyState === WebSocket.OPEN) {
-                                    twilioWs.send(JSON.stringify({
-                                        event: 'media',
-                                        streamSid: streamSid as string,
-                                        media: { payload: silence.toString('base64') }
-                                    }));
+                                // Strip WAV header from every chunk in the stream (44 bytes)
+                                if (bin.toString('ascii', 0, 4) === 'RIFF') {
+                                    bin = bin.subarray(44);
                                 }
-                                silenceCount++;
-                                setTimeout(sendSilence, 40);
-                            };
-                            sendSilence();
-                            return;
+
+                                if (bin.length > 0) {
+                                    // Safety copy to ensure byteOffset is even for Int16Array
+                                    const safeBin = Buffer.from(bin);
+                                    const pcm16 = new Int16Array(safeBin.buffer, safeBin.byteOffset, safeBin.length / 2);
+                                    const mulawBytes = Buffer.from(mulaw.encode(pcm16));
+                                    itemQueue.push(mulawBytes);
+                                    startPlaybackLoop();
+                                }
+                            }
+                        } catch (e) {
+                            // Partial line or NDJSON artifact
                         }
-
-                        const chunk = rawMulaw.subarray(offset, Math.min(offset + PACKET_SIZE, rawMulaw.length));
-                        if (twilioWs.readyState === WebSocket.OPEN) {
-                            twilioWs.send(JSON.stringify({
-                                event: "media",
-                                streamSid: streamSid,
-                                media: { payload: chunk.toString('base64') }
-                            }));
-                        }
-
-                        offset += PACKET_SIZE;
-                        const nextTime = startTime + (offset / 8);
-                        setTimeout(sendNextPacket, Math.max(0, nextTime - Date.now()));
-                    };
-
-                    sendNextPacket();
+                    }
                 }
 
             } catch (err: any) {
-                if (err.name === 'AbortError') {
-                    console.log("[inworld-tts] stream aborted for sentence:", sentence);
-                } else {
+                if (err.name !== 'AbortError') {
                     console.error("[inworld-tts] stream failed", err);
                 }
             }
         }
 
         async function processSentenceQueue() {
-            if (isSynthesizing) return;
-            isSynthesizing = true;
+            if (isProcessingQueue) return;
+            isProcessingQueue = true;
 
             while (sentenceQueue.length > 0) {
                 const sentence = sentenceQueue.shift();
@@ -169,7 +220,7 @@ export function setupTwilioWebSocket(server: Server) {
                 }
             }
 
-            isSynthesizing = false;
+            isProcessingQueue = false;
         }
 
         function extractSentencesAndQueue() {
@@ -272,8 +323,10 @@ export function setupTwilioWebSocket(server: Server) {
                     ttsAbortController.abort();
                     ttsAbortController = new AbortController();
                     sentenceQueue = [];
+                    itemQueue = [];
                     textBuffer = "";
-                    isSynthesizing = false;
+                    playbackActive = false;
+                    isProcessingQueue = false;
 
                     // Also clear Twilio buffer
                     if (streamSid) {
