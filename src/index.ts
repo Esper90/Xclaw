@@ -37,6 +37,9 @@ import { startTimelineSentinelWatcher } from "./claws/watchers/timelineSentinel"
 import { startVibeCheckWatcher } from "./claws/watchers/vibeCheck";
 import { startPriceHunterWatcher } from "./claws/watchers/priceHunter";
 import { startGithubWatcher } from "./claws/watchers/githubWatcher";
+import { startIdeaGeneratorWatcher } from "./claws/watchers/ideaGenerator";
+import { startNewsCuratorWatcher } from "./claws/watchers/newsCurator";
+import { startFeedbackAnalyzerWatcher } from "./claws/watchers/feedbackAnalyzer";
 
 async function main(): Promise<void> {
     console.log("🦾 Starting Xclaw...");
@@ -119,6 +122,24 @@ async function main(): Promise<void> {
     );
     // ── 6d4. Start GitHub watcher (daily) ───────────────────────────────────
     startGithubWatcher(
+        async (chatId, text, extra) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
+        }
+    );
+    // ── 6d5. Start content idea generator (weekly) ──────────────────────────
+    startIdeaGeneratorWatcher(
+        async (chatId, text, extra) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
+        }
+    );
+    // ── 6d6. Start news curator (3-hour cadence) ────────────────────────────
+    startNewsCuratorWatcher(
+        async (chatId, text, extra) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
+        }
+    );
+    // ── 6d7. Start feedback analyzer (weekly) ───────────────────────────────
+    startFeedbackAnalyzerWatcher(
         async (chatId, text, extra) => {
             await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
         }

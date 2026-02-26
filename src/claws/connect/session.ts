@@ -67,7 +67,9 @@ export interface SessionData {
         | "vip_list"
         | "vibe_freq"
         | "wishlist"
-        | "repos";
+        | "repos"
+        | "content_niche"
+        | "news_topics";
     /** Whether to receive proactive heartbeat messages */
     heartbeatEnabled: boolean;
     /** Whether voice inputs should be transcribed and saved without an AI reply */

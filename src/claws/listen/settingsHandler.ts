@@ -21,10 +21,14 @@ async function buildSettingsKeyboard(telegramId: number) {
     const aiDisplay = currentAi === "grok" ? "Grok 4.1" : "Gemini 3 Flash";
 
     const weatherLoc = (profile.prefs as any)?.weatherLocation;
+    const contentMode = Boolean((profile.prefs as any)?.contentMode);
+    const contentNiche = (profile.prefs as any)?.contentNiche as string | undefined;
+    const newsTopics = Array.isArray((profile.prefs as any)?.newsTopics) ? (profile.prefs as any).newsTopics as string[] : [];
     const vipLabel = profile.vipList && profile.vipList.length > 0 ? `${profile.vipList.length} handles` : "Not Set";
     const vibeLabel = profile.vibeCheckFreqDays ? `${profile.vibeCheckFreqDays}d` : "3d";
     const wishlistLabel = profile.wishlist && profile.wishlist.length > 0 ? `${profile.wishlist.length} items` : "Empty";
     const reposLabel = profile.watchedRepos && profile.watchedRepos.length > 0 ? `${profile.watchedRepos.length} repos` : "None";
+    const newsLabel = newsTopics.length > 0 ? `${newsTopics.slice(0, 3).join(", ")}${newsTopics.length > 3 ? "…" : ""}` : "Not Set";
 
     const keyboard = new InlineKeyboard()
         .text(`🧠 AI Provider: ${aiDisplay}`, "settings:toggle_ai").row()
@@ -36,7 +40,10 @@ async function buildSettingsKeyboard(telegramId: number) {
         .text(`⭐ VIP List: ${vipLabel}`, "settings:set_vips").row()
         .text(`🧘 Vibe Cadence: ${vibeLabel}`, "settings:set_vibe_freq").row()
         .text(`🛍️ Wishlist: ${wishlistLabel}`, "settings:set_wishlist").row()
-        .text(`🛠️ GitHub Repos: ${reposLabel}`, "settings:set_repos").row();
+        .text(`🛠️ GitHub Repos: ${reposLabel}`, "settings:set_repos").row()
+        .text(`🧠 Content Mode: ${contentMode ? "ON" : "OFF"}`, "settings:toggle_content_mode").row()
+        .text(`💡 Content Niche: ${contentNiche ? contentNiche : "Not Set"}`, "settings:set_content_niche").row()
+        .text(`📰 News Topics: ${newsLabel}`, "settings:set_news_topics").row();
 
     return keyboard;
 }
@@ -137,6 +144,17 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
         return;
     }
 
+    if (data === "settings:toggle_content_mode") {
+        const profile = await getUserProfile(telegramId);
+        const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+        newPrefs.contentMode = !newPrefs.contentMode;
+        await updateUserProfile(telegramId, { prefs: newPrefs });
+        await ctx.answerCallbackQuery({ text: `Content mode ${newPrefs.contentMode ? "enabled" : "disabled"}.` });
+        const newKeyboard = await buildSettingsKeyboard(telegramId);
+        await ctx.editMessageReplyMarkup({ reply_markup: newKeyboard }).catch(() => { });
+        return;
+    }
+
     if (data === "settings:set_vips") {
         ctx.session.awaitingSettingInput = "vip_list";
         await ctx.answerCallbackQuery();
@@ -162,6 +180,20 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
         ctx.session.awaitingSettingInput = "repos";
         await ctx.answerCallbackQuery();
         await ctx.reply("🛠️ Enter GitHub repos to watch (owner/repo), comma-separated. Send `clear` to empty.", { parse_mode: "Markdown" });
+        return;
+    }
+
+    if (data === "settings:set_content_niche") {
+        ctx.session.awaitingSettingInput = "content_niche";
+        await ctx.answerCallbackQuery();
+        await ctx.reply("💡 Set your content niche (e.g., 'AI agents for creators').", { parse_mode: "Markdown" });
+        return;
+    }
+
+    if (data === "settings:set_news_topics") {
+        ctx.session.awaitingSettingInput = "news_topics";
+        await ctx.answerCallbackQuery();
+        await ctx.reply("📰 Enter topics or feeds (comma-separated) for your curated news. Example: `AI agents, indie hacking, Phoenix tech`\nSend `clear` to remove.", { parse_mode: "Markdown" });
         return;
     }
 
@@ -247,6 +279,25 @@ export async function handleSettingTextInput(ctx: BotContext, text: string): Pro
                 : trimmed.split(",").map((r) => r.trim()).filter(Boolean);
             await updateUserProfile(telegramId, { watchedRepos: repos });
             await ctx.reply(`✅ Watched repos ${repos.length ? "updated" : "cleared"}.`, { parse_mode: "Markdown" });
+        }
+        else if (settingType === "content_niche") {
+            const trimmed = text.trim();
+            const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+            newPrefs.contentNiche = trimmed;
+            await updateUserProfile(telegramId, { prefs: newPrefs });
+            await ctx.reply(`✅ Content niche set to "${trimmed}".`, { parse_mode: "Markdown" });
+        }
+        else if (settingType === "news_topics") {
+            const trimmed = text.trim();
+            const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+            if (trimmed.toLowerCase() === "clear") {
+                delete (newPrefs as any).newsTopics;
+            } else {
+                const topics = trimmed.split(",").map((t) => t.trim()).filter(Boolean);
+                (newPrefs as any).newsTopics = topics;
+            }
+            await updateUserProfile(telegramId, { prefs: newPrefs });
+            await ctx.reply(`✅ News topics ${trimmed.toLowerCase() === "clear" ? "cleared" : "updated"}.`, { parse_mode: "Markdown" });
         }
     } catch (err: any) {
         await ctx.reply(`❌ Failed to save setting: ${err.message}`);
