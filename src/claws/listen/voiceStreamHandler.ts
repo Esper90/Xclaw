@@ -42,16 +42,16 @@ export function setupTwilioWebSocket(server: Server) {
         let ttsAbortController = new AbortController();
 
         async function streamSentenceToInworld(sentence: string) {
-            const url = "https://api.inworld.ai/tts/v1/voice:stream";
-            const requestData = {
+            const url = "https://api.inworld.ai/v2/tts:synthesize-speech";
+            const requestData: any = {
                 text: sentence,
-                voiceId: config.INWORLD_VOICE_ID || "hades",
-                modelId: "inworld-tts-1.5-mini",
+                voiceId: config.INWORLD_VOICE_ID || "Hades",
                 audioConfig: {
-                    audioEncoding: "LINEAR16", // Twilio requires 8000Hz. Let's send LINEAR16, although Twilio needs MULAW. Let's hope Twilio supports LINEAR16? No, Twilio *only* supports `audio/x-mulaw` at 8000Hz natively inside its media streams. Inworld's standard format might not output MULAW directly. Let's request it and see if it fails.
+                    audioEncoding: "MULAW",
                     sampleRateHertz: 8000
                 }
             };
+
 
             // For now, let's request "PCMU" or "MULAW" if Inworld supports it (Google TTS does).
             // Actually, Inworld's underlying Google TTS engine supports "MULAW".
