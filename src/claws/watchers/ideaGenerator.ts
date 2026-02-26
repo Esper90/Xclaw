@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { listAllUsers } from "../../db/userStore";
-import { getUserProfile } from "../../db/profileStore";
+import { getUserProfile, updateUserProfile } from "../../db/profileStore";
 import { performTavilySearch } from "../wire/tools/web_search";
 import { checkAndConsumeTavilyBudget } from "../sense/apiBudget";
 
@@ -58,6 +58,15 @@ export function startIdeaGeneratorWatcher(
                 }
 
                 if (!ideas.length) continue;
+
+                // Cache latest ideas in prefs for reuse in callbacks or low-budget runs
+                try {
+                    const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+                    newPrefs.contentIdeasCache = { niche, ideas, ts: Date.now() };
+                    await updateUserProfile(telegramId, { prefs: newPrefs });
+                } catch (err) {
+                    console.warn(`[idea-generator] Failed to cache ideas for ${telegramId}:`, err);
+                }
 
                 const message = [
                     "💡 Content Ideas",

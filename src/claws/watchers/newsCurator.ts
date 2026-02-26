@@ -1,6 +1,6 @@
 import cron from "node-cron";
 import { listAllUsers } from "../../db/userStore";
-import { getUserProfile } from "../../db/profileStore";
+import { getUserProfile, updateUserProfile } from "../../db/profileStore";
 import { performTavilySearch } from "../wire/tools/web_search";
 import { checkAndConsumeTavilyBudget } from "../sense/apiBudget";
 
@@ -32,21 +32,32 @@ export function startNewsCuratorWatcher(
                 const query = `top news for ${topics.join(", ")} today, 3 concise bullets with sources`;
                 let bullets: string[] = [];
                 let note = "";
+                const prevDigest = (prefs.newsDigest as any)?.bullets as string[] | undefined;
 
                 const budget = await checkAndConsumeTavilyBudget(telegramId);
                 if (!budget.allowed) {
                     note = `(search skipped: ${budget.reason})`;
+                    bullets = prevDigest ?? [];
                 } else {
                     try {
                         const raw = await performTavilySearch(query, 4);
                         bullets = formatNews(raw);
                     } catch (err) {
-                        note = "(search failed, showing topics only)";
+                        note = "(search failed, using last saved topics if any)";
+                        bullets = prevDigest ?? [];
                     }
                 }
 
                 if (bullets.length === 0) {
                     bullets = topics.slice(0, 3).map((t: string) => `Track: ${t}`);
+                }
+
+                try {
+                    const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+                    (newPrefs as any).newsDigest = { topics, bullets, ts: Date.now() };
+                    await updateUserProfile(telegramId, { prefs: newPrefs });
+                } catch (err) {
+                    console.warn(`[news-curator] Failed to cache digest for ${telegramId}:`, err);
                 }
 
                 const message = [
