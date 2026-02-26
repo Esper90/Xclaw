@@ -200,6 +200,28 @@ export function setupTwilioWebSocket(server: Server) {
         openAiWs.on("open", async () => {
             console.log("[twilio] Connected to OpenAI Realtime API");
 
+            // --- TONE TEST (Diagnostic 1) ---
+            if (streamSid) {
+                console.log("[twilio] Running 3-second tone test for streamSid:", streamSid);
+                const numSamples = 8000 * 3;
+                const pcm = new Int16Array(numSamples);
+                for (let i = 0; i < numSamples; i++) {
+                    pcm[i] = Math.floor(32767 * Math.sin(2 * Math.PI * 440 * (i / 8000)) * 0.4);
+                }
+                const toneMulaw = Buffer.from(mulaw.encode(pcm));
+                const PACKET_SIZE = 160;
+                for (let offset = 0; offset < toneMulaw.length; offset += PACKET_SIZE) {
+                    const chunk = toneMulaw.subarray(offset, Math.min(offset + PACKET_SIZE, toneMulaw.length));
+                    twilioWs.send(JSON.stringify({
+                        event: "media",
+                        streamSid: streamSid,
+                        media: { payload: chunk.toString('base64') }
+                    }));
+                }
+                console.log("[twilio] Tone test payload sent");
+            }
+            // --- END TONE TEST ---
+
             // 2. Fetch context and inject System Prompt alongside translated Tools
             const systemInstructions = await getCorePrompt(DEFAULT_USER_ID);
             const openAiTools = translateTools(registry.toGeminiTools()) || [];
