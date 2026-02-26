@@ -3,8 +3,26 @@ import { fetchDMs, fetchMentions, searchDMs, searchMentionsByContext } from "../
 import { registry, McpTool } from "./registry";
 import type { BotContext } from "../../connect/bot";
 import type { PendingDM, PendingMention } from "../../connect/session";
+import { checkAndConsumeXBudget } from "../../sense/apiBudget";
 
 const LABELS = "ABCDEFGHIJKLMNOP".split("");
+
+function resolveTelegramId(args: { userId?: string | number }, executionCtx?: Record<string, any>): number | null {
+    const raw = (args as any)?.userId
+        ?? (executionCtx as any)?.userId
+        ?? (executionCtx as any)?.ctx?.from?.id;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
+async function enforceXBudget(args: { userId?: string | number }, executionCtx?: Record<string, any>): Promise<string | null> {
+    const telegramId = resolveTelegramId(args, executionCtx);
+    if (telegramId === null) return "Error: Missing userId for X budget tracking.";
+
+    const budget = await checkAndConsumeXBudget(telegramId);
+    if (!budget.allowed) return `⏳ X inbox paused: ${budget.reason}. Try again soon.`;
+    return null;
+}
 
 /**
  * X Inbox Tools: Check Mentions
@@ -13,9 +31,13 @@ const checkMentionsTool: McpTool = {
     name: "check_mentions",
     description: "Fetch recent X (Twitter) mentions for the user. Call this when the user asks what's happening on their timeline or if anyone replied to them.",
     execute: async (args: { userId: string, limit?: number }, executionCtx?: Record<string, any>) => {
-        if (!args.userId) return "Error: No userId provided.";
+        const budgetBlock = await enforceXBudget(args, executionCtx);
+        if (budgetBlock) return budgetBlock;
+
+        const userId = args.userId ?? resolveTelegramId(args, executionCtx)?.toString();
+        if (!userId) return "Error: No userId provided.";
         try {
-            const mentions = await fetchMentions(args.userId, args.limit || 10);
+            const mentions = await fetchMentions(userId, args.limit || 10);
             if (mentions.length === 0) return "No new mentions found (or none scored high enough).";
 
             if (executionCtx?.ctx) {
@@ -62,9 +84,13 @@ const checkDmsTool: McpTool = {
     name: "check_dms",
     description: "Fetch recent X (Twitter) Direct Messages (DMs) for the user. Call this when the user asks 'check my DMs' or 'any new messages on X?'.",
     execute: async (args: { userId: string, limit?: number }, executionCtx?: Record<string, any>) => {
-        if (!args.userId) return "Error: No userId provided.";
+        const budgetBlock = await enforceXBudget(args, executionCtx);
+        if (budgetBlock) return budgetBlock;
+
+        const userId = args.userId ?? resolveTelegramId(args, executionCtx)?.toString();
+        if (!userId) return "Error: No userId provided.";
         try {
-            const dms = await fetchDMs(args.userId, args.limit || 5);
+            const dms = await fetchDMs(userId, args.limit || 5);
             if (dms.length === 0) return "No DMs found in the inbox.";
 
             if (executionCtx?.ctx) {
@@ -112,10 +138,11 @@ const searchMentionsTool: McpTool = {
     name: "search_mentions",
     description: "Search the user's past X mentions by specific person, topic, or context. Call this when the user asks 'find the mention from Bob' or 'that reply about the partnership'.",
     execute: async (args: { userId: string, query: string, limit?: number }, executionCtx?: Record<string, any>) => {
-        if (!args.userId) return "Error: No userId provided.";
+        const userId = args.userId ?? resolveTelegramId(args, executionCtx)?.toString();
+        if (!userId) return "Error: No userId provided.";
         if (!args.query) return "Error: No query provided.";
         try {
-            const mentions = await searchMentionsByContext(args.userId, args.query, args.limit || 5);
+            const mentions = await searchMentionsByContext(userId, args.query, args.limit || 5);
             if (mentions.length === 0) return `No past mentions found matching "${args.query}".`;
 
             if (executionCtx?.ctx) {
@@ -166,10 +193,14 @@ const searchDmsTool: McpTool = {
     name: "search_dms",
     description: "Search the user's X DMs for a specific sender, topic, or content. Call this when the user asks 'find the DM from Sage' or 'bring up the messages about pricing'.",
     execute: async (args: { userId: string, query: string }, executionCtx?: Record<string, any>) => {
-        if (!args.userId) return "Error: No userId provided.";
+        const budgetBlock = await enforceXBudget(args, executionCtx);
+        if (budgetBlock) return budgetBlock;
+
+        const userId = args.userId ?? resolveTelegramId(args, executionCtx)?.toString();
+        if (!userId) return "Error: No userId provided.";
         if (!args.query) return "Error: No query provided.";
         try {
-            const dms = await searchDMs(args.userId, args.query);
+            const dms = await searchDMs(userId, args.query);
             if (dms.length === 0) return `No DMs found matching "${args.query}".`;
 
             if (executionCtx?.ctx) {

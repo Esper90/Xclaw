@@ -64,6 +64,29 @@ export async function getDueReminders(): Promise<Reminder[]> {
     return data as Reminder[];
 }
 
+/** Fetch upcoming pending reminders for a user, ordered soonest first. */
+export async function getUpcomingReminders(userId: number, limit = 3): Promise<Reminder[]> {
+    if (!isSupabaseConfigured()) return [];
+    const db = getSupabase();
+    const nowIso = new Date().toISOString();
+
+    const { data, error } = await db
+        .from("xclaw_reminders")
+        .select("*")
+        .eq("status", "pending")
+        .eq("user_id", userId)
+        .gt("remind_at", nowIso)
+        .order("remind_at", { ascending: true })
+        .limit(limit);
+
+    if (error) {
+        console.error(`[reminders] Failed to fetch upcoming reminders for ${userId}:`, error);
+        return [];
+    }
+
+    return (data ?? []) as Reminder[];
+}
+
 /**
  * Marks a batch of reminders as completed so they don't fire again.
  */

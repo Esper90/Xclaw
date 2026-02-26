@@ -63,6 +63,9 @@ const schema = z.object({
     MENTION_ALLOWLIST: z.string().optional(),
     DM_ALLOWLIST: z.string().optional(),
 
+    // GitHub (optional PAT for watcher)
+    GITHUB_TOKEN: z.string().optional(),
+
     // ─── Supabase (multi-user credential store) ──────────────────────────────
     // Required for the user-owned-keys model.
     // Dashboard → Project Settings → API → URL and service_role secret key.

@@ -73,6 +73,36 @@ export async function getUserXClient(telegramId: number | string): Promise<Twitt
     );
 }
 
+/**
+ * Lightweight check to see if we have X creds for a user (Supabase row or env fallback).
+ */
+export async function hasUserXCreds(telegramId: number | string): Promise<boolean> {
+    const numId = typeof telegramId === "string" ? parseInt(telegramId, 10) : telegramId;
+
+    if (isSupabaseConfigured()) {
+        try {
+            const user = await getUser(numId);
+            if (
+                user?.x_consumer_key &&
+                user?.x_consumer_secret &&
+                user?.x_access_token &&
+                user?.x_access_secret
+            ) {
+                return true;
+            }
+        } catch (err) {
+            console.warn(`[hasUserXCreds] Supabase lookup failed for telegramId=${numId}:`, err);
+        }
+    }
+
+    return !!(
+        config.X_CONSUMER_KEY &&
+        config.X_CONSUMER_SECRET &&
+        config.X_ACCESS_TOKEN &&
+        config.X_ACCESS_SECRET
+    );
+}
+
 /** Force-evict a user's cached client — call after saving new credentials to DB. */
 export function invalidateUserXClient(telegramId: number | string): void {
     const numId = typeof telegramId === "string" ? parseInt(telegramId, 10) : telegramId;

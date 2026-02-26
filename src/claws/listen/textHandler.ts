@@ -7,7 +7,22 @@ import { registry } from "../wire/tools/registry";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { config } from "../../config";
 import { recordActivity } from "../sense/activityTracker";
+import { fetchMentions, fetchDMs, postButlerReply, searchDMs, searchMentionsByContext } from "../wire/xButler";
+import type { PendingDM, PendingMention } from "../connect/session";
+import { checkAndConsumeXBudget } from "../sense/apiBudget";
+
+const LABELS = "ABCDEFGHIJKLMNOP".split("");
+
 const MIN_MEMORY_SCORE = 0.75;
+
+async function ensureXBudget(userId: string): Promise<string | null> {
+    const telegramId = Number(userId);
+    if (!Number.isFinite(telegramId)) return "⚠️ Missing user ID for X budget tracking.";
+
+    const budget = await checkAndConsumeXBudget(telegramId);
+    if (!budget.allowed) return `⏳ X checks are paused: ${budget.reason}. Try again shortly.`;
+    return null;
+}
 
 const intentAI = new GoogleGenerativeAI(config.GEMINI_API_KEY);
 
@@ -35,6 +50,519 @@ Message: "${message.replace(/"/g, "'")}"`
 }
 
 /**
+ * Use Gemini to detect if the user is asking about X (Twitter) DMs or mentions.
+ * Returns "dms", "mentions", or "none".
+ * NOTE: only called as fallback after detectXIntent returns "none".
+ */
+async function detectButlerIntent(message: string): Promise<"dms" | "mentions" | "none"> {
+    const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
+    const result = await model.generateContent(
+        `You are a classifier. Is the user asking to check their X (Twitter) DMs/messages (general inbox check), or their X mentions/replies?
+This is for a GENERAL inbox fetch — NOT a specific search for a particular DM.
+
+DMS examples (general fetch, no specific person/topic): "check my dms", "any new messages", "what's in my inbox", "any dms?", "show me my messages"
+MENTIONS examples: "any mentions", "who mentioned me", "anything important on x", "what's new on twitter", "any replies", "check my mentions", "anything going on on x", "show me my last mention", "my last mention", "last mention", "what are my mentions", "my recent mentions"
+NONE examples: anything asking for a specific DM by person/topic/content, general questions unrelated to X
+
+Reply with exactly one word. Options: dms / mentions / none
+
+Message: "${message.replace(/"/g, "'")}"`
+    );
+    const answer = result.response.text().trim().toLowerCase().split(/\s/)[0];
+    if (answer === "dms") return "dms";
+    if (answer === "mentions") return "mentions";
+    return "none";
+}
+
+/** Format DMs result into a clean Telegram markdown string and store in session */
+async function runDMsReply(userId: string, ctx: BotContext): Promise<string> {
+    const budgetWarning = await ensureXBudget(userId);
+    if (budgetWarning) return budgetWarning;
+
+    const dms = await fetchDMs(userId, 5);
+    if (dms.length === 0) {
+        ctx.session.pendingDMs = [];
+        return `📭 *No DMs to show right now.* Inbox looks clear — or DM permissions may not be enabled on your X app yet.`;
+    }
+
+    // Store in session with labels so user can say "reply to A"
+    ctx.session.pendingDMs = dms.map((dm, i) => ({
+        label: LABELS[i] ?? String(i + 1),
+        id: dm.id,
+        conversationId: dm.conversationId,
+        senderId: dm.senderId,
+        senderUsername: dm.senderUsername,
+        text: dm.text,
+        suggestedReply: dm.suggestedReply,
+    } satisfies PendingDM));
+
+    let msg = `📨 *${dms.length} DM${dms.length > 1 ? "s" : ""}:*\n\n`;
+    for (const p of ctx.session.pendingDMs) {
+        msg += `*[${p.label}]* 👤 @${p.senderUsername ?? p.senderId}\n`;
+        msg += `💬 ${p.text.slice(0, 220)}${p.text.length > 220 ? "…" : ""}\n`;
+        if (p.suggestedReply) {
+            msg += `💡 *Suggested:* ${p.suggestedReply.slice(0, 200)}\n`;
+        }
+        msg += `\n`;
+    }
+    msg += `_Reply naturally — e.g. "reply to A", "reply to all", "reply to B but ask if they're free Friday"_`;
+    return msg.trim();
+}
+
+/** Format mentions result into a clean Telegram markdown string and store in session */
+async function runMentionsReply(userId: string, ctx: BotContext): Promise<string> {
+    const budgetWarning = await ensureXBudget(userId);
+    if (budgetWarning) return budgetWarning;
+
+    const mentions = await fetchMentions(userId, 10);
+    if (mentions.length === 0) {
+        ctx.session.pendingMentions = [];
+        return `📭 *No important mentions right now.* Nothing new scored high enough to surface — the butler checks automatically every 15 min.`;
+    }
+
+    // Store in session with labels so user can say "reply to A"
+    ctx.session.pendingMentions = mentions.map((m, i) => ({
+        label: LABELS[i] ?? String(i + 1),
+        id: m.id,
+        authorId: m.authorId,
+        authorUsername: m.authorUsername,
+        text: m.text,
+        suggestedReply: m.suggestedReply,
+    } satisfies PendingMention));
+
+    let msg = `📣 *${mentions.length} important mention${mentions.length > 1 ? "s" : ""}:*\n\n`;
+    for (const p of ctx.session.pendingMentions) {
+        const m = mentions.find((x) => x.id === p.id)!;
+        msg += `*[${p.label}]* 👤 @${p.authorUsername ?? p.authorId}\n`;
+        msg += `💬 ${p.text.slice(0, 200)}${p.text.length > 200 ? "…" : ""}\n`;
+        msg += `📊 Score: ${(m.importanceScore * 100).toFixed(0)}% | ❤️ ${m.engagement}\n`;
+        if (p.suggestedReply) {
+            msg += `💡 *Suggested:* ${p.suggestedReply.slice(0, 180)}\n`;
+        }
+        msg += `🔗 https://x.com/i/status/${p.id}\n\n`;
+    }
+    msg += `_Say "reply to A", "reply to all", or "reply to B but say…"_`;
+    return msg.trim();
+}
+
+/**
+ * Detect if the user wants to reply to one or more pending mentions.
+ * Works identically to detectReplyIntent but is called separately so mentions
+ * and DMs don't accidentally consume each other's session state.
+ */
+async function detectMentionReplyIntent(
+    message: string,
+    pendingLabels: string[]
+): Promise<{ action: "reply" | "none"; targets: string[]; instruction?: string }> {
+    const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
+    const labelsStr = pendingLabels.join(", ");
+    const result = await model.generateContent(
+        `You are a JSON classifier. The user was just shown ${pendingLabels.length} X (Twitter) mention(s) labeled: ${labelsStr}.
+Decide if the user wants to REPLY to one or more of those mentions.
+
+REPLY examples:
+- "reply" → {"action":"reply","targets":["${pendingLabels[0] ?? "A"}"]}
+- "yeah reply to A" → {"action":"reply","targets":["A"]}
+- "reply to all" → {"action":"reply","targets":["all"]}
+- "reply to B and say thanks for that" → {"action":"reply","targets":["B"],"instruction":"say thanks for that"}
+- "can you reply to A but make it more professional" → {"action":"reply","targets":["A"],"instruction":"make it more professional"}
+- "send that reply" → {"action":"reply","targets":["all"]}
+- "go ahead" → {"action":"reply","targets":["all"]}
+- "yes send it" → {"action":"reply","targets":["all"]}
+- "reply to A and C" → {"action":"reply","targets":["A","C"]}
+
+NOT REPLY — return none:
+- general questions unrelated to replying
+- asking to check mentions again
+- asking about DMs
+
+IMPORTANT: If the user just says "reply" with no label, assume they mean the first one (${pendingLabels[0] ?? "A"}).
+
+Return ONLY valid JSON. No explanation, no markdown, no code block.
+
+Message: "${message.replace(/"/g, "'")}"` 
+    );
+
+    try {
+        const raw = result.response.text().trim().replace(/^```json\n?|```$/g, "").trim();
+        const parsed = JSON.parse(raw);
+        if (parsed.action === "reply" && Array.isArray(parsed.targets)) {
+            return {
+                action: "reply",
+                targets: (parsed.targets as string[]).map((t) => t.toUpperCase()),
+                instruction: parsed.instruction as string | undefined,
+            };
+        }
+    } catch {
+        // parse failed — fall through to none
+    }
+    return { action: "none", targets: [] };
+}
+
+/** Reply to one or more pending mentions on X. */
+async function executeMentionReply(
+    userId: string,
+    ctx: BotContext,
+    targets: string[],
+    instruction?: string
+): Promise<string> {
+    const pending = ctx.session.pendingMentions;
+    if (!pending || pending.length === 0) {
+        return `📭 No mentions loaded. Say "check my mentions" first so I can see what's there.`;
+    }
+
+    const toReply = targets[0] === "ALL"
+        ? pending
+        : pending.filter((p) => targets.includes(p.label.toUpperCase()));
+
+    if (toReply.length === 0) {
+        const available = pending.map((p) => p.label).join(", ");
+        return `❓ Couldn't find those mentions. Available: ${available}. Try "reply to ${available[0]}" or "reply to all".`;
+    }
+
+    const results: string[] = [];
+    for (const mention of toReply) {
+        const base = mention.suggestedReply ?? `Thanks for the mention!`;
+        const finalText = await buildReplyText(mention.text, base, instruction);
+
+        const replyResult = await postButlerReply(userId, mention.id, finalText, false);
+
+        if (replyResult.success) {
+            results.push(`✅ *[${mention.label}]* Replied to @${mention.authorUsername ?? mention.authorId}\n_"${finalText.slice(0, 120)}${finalText.length > 120 ? "…" : ""}"_`);
+        } else {
+            results.push(`❌ *[${mention.label}]* Failed to reply to @${mention.authorUsername ?? mention.authorId}: ${replyResult.error}`);
+        }
+    }
+
+    // Clear replied mentions from session
+    ctx.session.pendingMentions = pending.filter(
+        (p) => !toReply.some((r) => r.label === p.label)
+    );
+
+    return results.join("\n\n");
+}
+
+/**
+ * Detect if the user is searching for specific DMs by description.
+ * Returns { isSearch: true, query } or { isSearch: false }.
+ * Only runs when the butler intent check returns "none".
+ */
+async function detectDMSearchIntent(
+    message: string
+): Promise<{ isSearch: boolean; query: string }> {
+    const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
+    const result = await model.generateContent(
+        `You are a classifier. Is the user asking to SEARCH or FIND specific DMs by sender name, username, content, topic, or any description?
+If they mention ANY specific person, name, username, or topic they want to find — that is a SEARCH.
+
+SEARCH examples — extract the core search query:
+- "can you bring up the dms from sage is the name" → query: "from sage"
+- "find the dm from @sageisthename1" → query: "from sageisthename1"  
+- "find the dm from John" → query: "from John"
+- "can you find the dm about the advertising issue" → query: "about advertising"
+- "look for messages from support" → query: "from support"
+- "find that dm about the refund" → query: "about refund"
+- "any dms mentioning the collab?" → query: "mentioning collab"
+- "bring me dms about my chrome extension" → query: "about chrome extension"
+- "that message where they asked about pricing" → query: "asked about pricing"
+- "bring up the messages from that person who asked about the deal" → query: "asked about the deal"
+- "show me the dm from the ads team" → query: "from ads team"
+- "the dm about the partnership" → query: "about partnership"
+
+NOT SEARCH (return isSearch: false):
+- "check my dms"
+- "any new messages?"
+- "what's in my inbox"
+- "show me my last mention" ← this is about X @mentions, NOT a DM search
+- "show me my mentions"
+- "what are my mentions"
+- "any mentions?"
+- "who mentioned me"
+- "check my mentions"
+- "last mention"
+- "my recent mentions"
+IMPORTANT: Anything about "mentions" (being @tagged or replied to on X) is NOT a DM search — return isSearch: false.
+
+Return ONLY valid JSON: {"isSearch": true, "query": "the search query"} or {"isSearch": false, "query": ""}
+No explanation, no markdown, no code block.
+
+Message: "${message.replace(/"/g, "'")}"`
+    );
+
+    try {
+        const raw = result.response.text().trim().replace(/^```json\n?|```$/g, "").trim();
+        const parsed = JSON.parse(raw);
+        if (parsed.isSearch === true && typeof parsed.query === "string" && parsed.query.length > 0) {
+            return { isSearch: true, query: parsed.query };
+        }
+    } catch { /* fall through */ }
+    return { isSearch: false, query: "" };
+}
+
+/** Search DMs and format results into a Telegram markdown message, storing in session */
+async function runDMSearchReply(userId: string, ctx: BotContext, query: string): Promise<string> {
+    const budgetWarning = await ensureXBudget(userId);
+    if (budgetWarning) return budgetWarning;
+
+    const dms = await searchDMs(userId, query);
+
+    if (dms.length === 0) {
+        // For person queries give a more specific hint about using the full handle
+        const personMatch = query.match(/(?:from|by)\s*@?(\w+)/i);
+        if (personMatch) {
+            const name = personMatch[1];
+            return `🔍 *No DMs found from "${name}"*\n\n⚠️ X's new encrypted chats (XChat) are currently invisible to the API. X has officially stated they are releasing an update to fix this soon.\n✅ Legacy (non-encrypted) DMs are still fully retrievable.\n\n💡 In the meantime, try the full handle: _"find dm from @theirfullhandle"_`;
+        }
+        return `🔍 *No DMs found matching:* "${query}"\n\nTried your recent messages — nothing matched. Try a different description.`;
+    }
+
+    ctx.session.pendingDMs = dms.map((dm, i) => ({
+        label: LABELS[i] ?? String(i + 1),
+        id: dm.id,
+        conversationId: dm.conversationId,
+        senderId: dm.senderId,
+        senderUsername: dm.senderUsername,
+        text: dm.text,
+        suggestedReply: dm.suggestedReply,
+    }));
+
+    let msg = `🔍 *Found ${dms.length} DM${dms.length > 1 ? "s" : ""} matching "${query}":*\n\n`;
+    for (const p of ctx.session.pendingDMs) {
+        msg += `*[${p.label}]* 👤 @${p.senderUsername ?? p.senderId}\n`;
+        msg += `💬 ${p.text.slice(0, 220)}${p.text.length > 220 ? "…" : ""}\n`;
+        if (p.suggestedReply) {
+            msg += `💡 *Suggested:* ${p.suggestedReply.slice(0, 200)}\n`;
+        }
+        msg += `\n`;
+    }
+    msg += `_Say "reply to A", "reply to all", or "reply to B but add…"_`;
+    return msg.trim();
+}
+
+/**
+ * Detect if the user is searching for a SPECIFIC past mention by context —
+ * e.g. "that mention from bob", "find the mention about the collab",
+ * "reply to that mention from @guy".
+ *
+ * Returns { isSearch, query, impliedReply } where `impliedReply` means the
+ * user wants to reply immediately after finding (e.g. "reply to that mention from X").
+ */
+async function detectMentionSearchIntent(
+    message: string
+): Promise<{ isSearch: boolean; query: string; impliedReply: boolean }> {
+    const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
+    const result = await model.generateContent(
+        `You are a classifier. Is the user trying to FIND or RETRIEVE a specific past X (Twitter) mention by description, person, or content?
+
+SEARCH examples — extract the core search query and detect if they also want to reply:
+- "that mention from bob" → {"isSearch":true,"query":"mention from bob","impliedReply":false}
+- "find the mention from @bobtheguy" → {"isSearch":true,"query":"from @bobtheguy","impliedReply":false}
+- "the mention about the collab" → {"isSearch":true,"query":"about the collab","impliedReply":false}
+- "can you find the mention where someone asked about pricing" → {"isSearch":true,"query":"someone asked about pricing","impliedReply":false}
+- "reply to that mention from sage" → {"isSearch":true,"query":"from sage","impliedReply":true}
+- "find that mention from mark and reply" → {"isSearch":true,"query":"from mark","impliedReply":true}
+- "that tweet where someone mentioned me about the deal" → {"isSearch":true,"query":"mentioned about the deal","impliedReply":false}
+- "look up the mention from the marketing guy" → {"isSearch":true,"query":"from marketing guy","impliedReply":false}
+
+NOT SEARCH (return isSearch: false) — these are NOT specific mention lookups:
+- "show me my mentions" ← general fetch, not a search
+- "check my mentions"
+- "any new mentions?"
+- "who mentioned me"
+- "any dms?"
+- general questions unrelated to X mentions
+
+IMPORTANT: Only return isSearch:true if the user is looking for a SPECIFIC mention (by person, topic, or content). General "show my mentions" requests are NOT searches.
+
+Return ONLY valid JSON with no explanation or markdown.
+
+Message: "${message.replace(/"/g, "'")}"`
+    );
+
+    try {
+        const raw = result.response.text().trim().replace(/^```json\n?|```$/g, "").trim();
+        const parsed = JSON.parse(raw);
+        if (parsed.isSearch === true && typeof parsed.query === "string" && parsed.query.length > 0) {
+            return { isSearch: true, query: parsed.query, impliedReply: parsed.impliedReply === true };
+        }
+    } catch { /* fall through */ }
+    return { isSearch: false, query: "", impliedReply: false };
+}
+
+/**
+ * Search past mentions semantically via Pinecone memory and format results.
+ * Loads into pendingMentions so the user can say "reply to A" naturally after.
+ * If impliedReply=true, automatically triggers reply on the first result.
+ */
+async function runMentionSearchReply(
+    userId: string,
+    ctx: BotContext,
+    query: string,
+    impliedReply = false
+): Promise<string> {
+    const mentions = await searchMentionsByContext(userId, query);
+
+    if (mentions.length === 0) {
+        return (
+            `🔍 *No past mention found matching:* "${query}"\n\n` +
+            `I searched your mention history but couldn't find a match.\n` +
+            `💡 Try: _"show me my mentions"_ to fetch fresh ones first, then search again.`
+        );
+    }
+
+    // Load into session so the user can follow up with "reply to A"
+    ctx.session.pendingMentions = mentions.map((m, i) => ({
+        label: LABELS[i] ?? String(i + 1),
+        id: m.id,
+        authorId: m.authorId,
+        authorUsername: m.authorUsername,
+        text: m.text,
+        suggestedReply: m.suggestedReply,
+    }));
+
+    let msg = `🔍 *Found ${mentions.length} mention${mentions.length > 1 ? "s" : ""} matching "${query}":*\n\n`;
+    for (const p of ctx.session.pendingMentions) {
+        msg += `*[${p.label}]* 👤 @${p.authorUsername || p.authorId}\n`;
+        msg += `💬 ${p.text.slice(0, 220)}${p.text.length > 220 ? "…" : ""}\n`;
+        if (p.suggestedReply) {
+            msg += `💡 *Suggested reply:* ${p.suggestedReply.slice(0, 200)}\n`;
+        }
+        msg += `🔗 https://x.com/i/status/${p.id}\n\n`;
+    }
+
+    // If the user asked to reply in the same message, automatically trigger on first match
+    if (impliedReply && ctx.session.pendingMentions.length > 0) {
+        const firstLabel = ctx.session.pendingMentions[0].label;
+        const replyResult = await executeMentionReply(userId, ctx, [firstLabel]);
+        return msg.trim() + "\n\n" + replyResult;
+    }
+
+    msg += `_Say "reply to A", "reply to all", or "reply to B but add…"_`;
+    return msg.trim();
+}
+
+/**
+ * Detect if the user wants to reply to one or more pending DMs.
+ * Returns targets like ["A"], ["all"], ["B","C"] and an optional custom instruction.
+ * Only called when pendingDMs.length > 0 to save tokens.
+ */
+async function detectReplyIntent(
+    message: string,
+    pendingLabels: string[]
+): Promise<{ action: "reply" | "none"; targets: string[]; instruction?: string }> {
+    const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
+    const labelsStr = pendingLabels.join(", ");
+    const result = await model.generateContent(
+        `You are a JSON classifier. The user has just been shown ${pendingLabels.length} DM(s) labeled: ${labelsStr}.
+Decide if the user wants to REPLY to one or more of those DMs.
+
+REPLY examples:
+- "yeah reply to A" → {"action":"reply","targets":["A"]}
+- "reply to all of them" → {"action":"reply","targets":["all"]}
+- "go ahead and send" → {"action":"reply","targets":["all"]}
+- "reply to B but ask if they can call tomorrow" → {"action":"reply","targets":["B"],"instruction":"ask if they can call tomorrow"}
+- "reply to A and add that I'm running late" → {"action":"reply","targets":["A"],"instruction":"add that I'm running late"}
+- "reply to A and C" → {"action":"reply","targets":["A","C"]}
+- "send that to B" → {"action":"reply","targets":["B"]}
+- "yes send it" → {"action":"reply","targets":["all"]}
+
+NOT REPLY examples (return none):
+- general questions
+- asking to check DMs again
+- anything not about replying
+
+Return ONLY valid JSON. No explanation, no markdown, no code block.
+
+Message: "${message.replace(/"/g, "'")}"`
+    );
+
+    try {
+        const raw = result.response.text().trim().replace(/^```json\n?|```$/g, "").trim();
+        const parsed = JSON.parse(raw);
+        if (parsed.action === "reply" && Array.isArray(parsed.targets)) {
+            return {
+                action: "reply",
+                targets: (parsed.targets as string[]).map((t) => t.toUpperCase()),
+                instruction: parsed.instruction as string | undefined,
+            };
+        }
+    } catch {
+        // parse failed — fall through to none
+    }
+    return { action: "none", targets: [] };
+}
+
+/**
+ * If the user gave a custom instruction, blend it with the suggested reply via Gemini.
+ * Otherwise return the suggested reply as-is.
+ */
+async function buildReplyText(
+    originalDM: string,
+    suggested: string,
+    instruction?: string
+): Promise<string> {
+    if (!instruction) return suggested;
+    const model = intentAI.getGenerativeModel({ model: config.GEMINI_MODEL });
+    const result = await model.generateContent(
+        `You are writing a DM reply on behalf of the user.
+
+Original DM received: "${originalDM.replace(/"/g, "'")}"
+Suggested reply: "${suggested.replace(/"/g, "'")}"
+User instruction: "${instruction.replace(/"/g, "'")}"
+
+Write the final reply that incorporates the user's instruction. Keep it natural, concise (under 300 words) and conversational.
+Return ONLY the reply text, nothing else.`
+    );
+    return result.response.text().trim();
+}
+
+/**
+ * Execute replies to one or more pending DMs.
+ * Handles "all", specific labels ["A","B"], custom instructions.
+ */
+async function executeReply(
+    userId: string,
+    ctx: BotContext,
+    targets: string[],
+    instruction?: string
+): Promise<string> {
+    const pending = ctx.session.pendingDMs;
+    if (!pending || pending.length === 0) {
+        return `📭 No DMs loaded. Say "check my dms" first so I can see what's in your inbox.`;
+    }
+
+    const toReply = targets[0] === "ALL"
+        ? pending
+        : pending.filter((p) => targets.includes(p.label.toUpperCase()));
+
+    if (toReply.length === 0) {
+        const available = pending.map((p) => p.label).join(", ");
+        return `❓ Couldn't find those DMs. Available: ${available}. Try "reply to ${available[0]}" or "reply to all".`;
+    }
+
+    const results: string[] = [];
+    for (const dm of toReply) {
+        const base = dm.suggestedReply ?? `Thanks for reaching out, I'll get back to you soon.`;
+        const finalText = await buildReplyText(dm.text, base, instruction);
+
+        const replyResult = await postButlerReply(userId, dm.id, finalText, true, dm.conversationId);
+
+        if (replyResult.success) {
+            results.push(`✅ *[${dm.label}]* Replied to @${dm.senderUsername ?? dm.senderId}\n_"${finalText.slice(0, 120)}${finalText.length > 120 ? "…" : ""}"_`);
+        } else {
+            results.push(`❌ *[${dm.label}]* Failed to reply to @${dm.senderUsername ?? dm.senderId}: ${replyResult.error}`);
+        }
+    }
+
+    // Clear replied DMs from session
+    ctx.session.pendingDMs = pending.filter(
+        (p) => !toReply.some((r) => r.label === p.label)
+    );
+
+    return results.join("\n\n");
+}
+
+/**
  * Full pipeline for a text message:
  * 0. Check for voice toggle intent (any phrasing)
  * 1. Add user message to buffer
@@ -55,13 +583,7 @@ export async function handleText(
     // Track activity for butler background watcher
     recordActivity(userId);
 
-    // 0. Thread Mode Intercept
-    if (ctx.session.threadMode) {
-        ctx.session.threadBuffer.push(userMessage);
-        return `🧵 *Added to Thread Draft:*\n_"${userMessage}"_\n\n_Keep typing/talking, or type /finish to post._`;
-    }
-
-    // 0a. Voice intent check — catches any natural phrasing before full pipeline
+    // 0. Voice intent check — catches any natural phrasing before full pipeline
     try {
         const voiceIntent = await detectVoiceIntent(userMessage);
         if (voiceIntent === "on") {
@@ -77,7 +599,67 @@ export async function handleText(
         console.warn("[textHandler] Voice intent check failed:", err);
     }
 
-    // Removed legacy interceptors; Gemini now handles tools natively
+    // 0b. DM reply intent — only runs if we have pending DMs in session (zero extra cost otherwise)
+    if (ctx.session.pendingDMs?.length > 0) {
+        try {
+            const labels = ctx.session.pendingDMs.map((d) => d.label);
+            const replyIntent = await detectReplyIntent(userMessage, labels);
+            if (replyIntent.action === "reply") {
+                return await executeReply(userId, ctx, replyIntent.targets, replyIntent.instruction);
+            }
+        } catch (err) {
+            console.warn("[textHandler] Reply intent check failed:", err);
+        }
+    }
+
+    // 0b2. Mention reply intent — only runs if we have pending mentions in session
+    if (ctx.session.pendingMentions?.length > 0) {
+        try {
+            const labels = ctx.session.pendingMentions.map((m) => m.label);
+            const mentionReplyIntent = await detectMentionReplyIntent(userMessage, labels);
+            if (mentionReplyIntent.action === "reply") {
+                return await executeMentionReply(userId, ctx, mentionReplyIntent.targets, mentionReplyIntent.instruction);
+            }
+        } catch (err) {
+            console.warn("[textHandler] Mention reply intent check failed:", err);
+        }
+    }
+
+    // 0c. DM search intent — MUST run before general butler check.
+    //     "bring up dms from sage" is a search, not a general fetch.
+    //     Specific always wins over general.
+    try {
+        const searchIntent = await detectDMSearchIntent(userMessage);
+        if (searchIntent.isSearch) {
+            return await runDMSearchReply(userId, ctx, searchIntent.query);
+        }
+    } catch (err) {
+        console.warn("[textHandler] DM search intent check failed:", err);
+    }
+
+    // 0d. Mention search intent — "that mention from bob", "find the mention about X"
+    //     Queries Pinecone for past mentions so the butler remembers across sessions.
+    try {
+        const mentionSearchIntent = await detectMentionSearchIntent(userMessage);
+        if (mentionSearchIntent.isSearch) {
+            return await runMentionSearchReply(userId, ctx, mentionSearchIntent.query, mentionSearchIntent.impliedReply);
+        }
+    } catch (err) {
+        console.warn("[textHandler] Mention search intent check failed:", err);
+    }
+
+    // 0d. General butler intent — catches broad X DM / mention queries
+    try {
+        const butlerIntent = await detectButlerIntent(userMessage);
+        if (butlerIntent === "dms") {
+            return await runDMsReply(userId, ctx);
+        }
+        if (butlerIntent === "mentions") {
+            return await runMentionsReply(userId, ctx);
+        }
+    } catch (err) {
+        console.warn("[textHandler] Butler intent check failed:", err);
+    }
 
     // 1. Update buffer with user message
     ctx.session.buffer = addToBuffer(ctx.session.buffer, "user", userMessage);
@@ -98,36 +680,34 @@ export async function handleText(
     }
 
     // 3. Build system prompt
-    let systemPrompt = (await getCorePrompt(userId)) + memorySuffix;
-
-    // Inject active DMs and Mentions into system prompt context so tools can reference them
-    if (ctx.session.pendingDMs?.length > 0) {
-        systemPrompt += "\n\n--- CURRENT VISIBLE DMs ---\n" + JSON.stringify(ctx.session.pendingDMs, null, 2);
-    }
-    if (ctx.session.pendingMentions?.length > 0) {
-        systemPrompt += "\n\n--- CURRENT VISIBLE MENTIONS ---\n" + JSON.stringify(ctx.session.pendingMentions, null, 2);
-    }
-
+    const systemPrompt = getCorePrompt(userId) + memorySuffix;
     const history = bufferToHistory(ctx.session.buffer.slice(0, -1));
     const tools = registry.toGeminiTools();
 
-    // 4. Call AI model with recursive tool dispatch
-    const reply = await routeToModel(
-        systemPrompt,
-        history,
-        userMessage,
-        tools,
-        // Bind dispatch to registry so 'this' context isn't lost
-        (name, args, executionCtx) => registry.dispatch(name, args, executionCtx),
-        { ctx, userId, chatId: ctx.chat?.id }
-    );
+    // 4. Call AI model
+    const reply = await routeToModel(systemPrompt, history, userMessage, tools);
 
-    const finalText = reply.text;
+    // 5. Handle tool calls if present
+    let finalText = reply.text;
+    if (reply.toolCalls && reply.toolCalls.length > 0) {
+        const toolResults: string[] = [];
+        for (const tc of reply.toolCalls) {
+            const result = await registry.dispatch(tc.name, tc.args, { ctx, userId });
+            toolResults.push(`[${tc.name}]: ${result}`);
+        }
+        const followUp = await routeToModel(
+            systemPrompt,
+            history,
+            `Tool results:\n${toolResults.join("\n")}\n\nUser's original request: ${userMessage}`,
+            []
+        );
+        finalText = followUp.text;
+    }
 
-    // 5. Update buffer with model reply
+    // 6. Update buffer with model reply
     ctx.session.buffer = addToBuffer(ctx.session.buffer, "model", finalText);
 
-    // 6. Upsert memory (async, don't block reply)
+    // 7. Upsert memory (async, don't block reply)
     upsertMemory(userId, `User: ${userMessage}\nAssistant: ${finalText}`, {
         source: "conversation",
     }).catch((err) => console.warn(`[textHandler] Memory upsert failed:`, err));

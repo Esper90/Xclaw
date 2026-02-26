@@ -19,6 +19,8 @@ import "./claws/wire/tools/telegram_media";
 import "./claws/wire/tools/x_interact";
 import "./claws/wire/tools/x_delete";
 import "./claws/wire/tools/x_profile";
+import "./claws/wire/tools/repurpose";
+import "./claws/wire/tools/thread_archaeologist";
 
 import { bot, sessionMap } from "./claws/connect/bot";
 import { authMiddleware } from "./claws/connect/auth";
@@ -30,6 +32,11 @@ import { startButlerWatcher } from "./claws/wire/xButler";
 import { injectWebhookSender } from "./api/routes/xWebhook";
 import { startReminderWatcher } from "./db/reminderWatcher";
 import { startPostWatcher } from "./db/postWatcher";
+import { startDailyBriefWatcher } from "./claws/watchers/dailyBrief";
+import { startTimelineSentinelWatcher } from "./claws/watchers/timelineSentinel";
+import { startVibeCheckWatcher } from "./claws/watchers/vibeCheck";
+import { startPriceHunterWatcher } from "./claws/watchers/priceHunter";
+import { startGithubWatcher } from "./claws/watchers/githubWatcher";
 
 async function main(): Promise<void> {
     console.log("🦾 Starting Xclaw...");
@@ -86,13 +93,43 @@ async function main(): Promise<void> {
         },
         isSilenced
     );
-    // ── 6c. Start reminder background watcher (60s exact-time checks) ──────────
+    // ── 6c. Start daily brief watcher (07:30 local time per user) ─────────────
+    startDailyBriefWatcher(
+        async (chatId, text, extra) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
+        }
+    );
+    // ── 6d. Start timeline sentinel watcher (30m, X-only) ─────────────────────
+    startTimelineSentinelWatcher(
+        async (chatId, text, extra) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
+        }
+    );
+    // ── 6d2. Start proactive vibe check (every few days) ─────────────────────
+    startVibeCheckWatcher(
+        async (chatId, text, extra) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
+        }
+    );
+    // ── 6d3. Start price & deal hunter (daily) ──────────────────────────────
+    startPriceHunterWatcher(
+        async (chatId, text, extra) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
+        }
+    );
+    // ── 6d4. Start GitHub watcher (daily) ───────────────────────────────────
+    startGithubWatcher(
+        async (chatId, text, extra) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
+        }
+    );
+    // ── 6e. Start reminder background watcher (60s exact-time checks) ──────────
     startReminderWatcher(
         async (chatId, text) => {
             await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });
         }
     );
-    // ── 6d. Start scheduled post watcher (60s exact-time checks) ───────────────
+    // ── 6f. Start scheduled post watcher (60s exact-time checks) ───────────────
     startPostWatcher(
         async (chatId, text) => {
             await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown" });

@@ -11,7 +11,8 @@ import { fetchMentions, fetchDMs } from "../wire/xButler";
 import { TwitterApi } from "twitter-api-v2";
 import { upsertUser, deleteUser, getUser, getOrGeneratePineconeKey } from "../../db/userStore";
 import { deleteCachedProfile } from "../../db/xCacheStore";
-import { deleteAllRemindersForUser } from "../../db/reminders";
+import { createReminder, deleteAllRemindersForUser } from "../../db/reminders";
+import { getUserProfile } from "../../db/profileStore";
 import { invalidateUserXClient } from "../../db/getUserClient";
 import { registerAndSubscribeWebhook } from "../../x/webhookManager";
 import { config } from "../../config";
@@ -22,6 +23,7 @@ import { InputFile, InlineKeyboard } from "grammy";
 import { recordInteraction } from "../archive/buffer";
 
 const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
+const SENTINEL_LABELS = DM_LABELS;
 
 /**
  * Register all bot message and command handlers on the bot instance.
@@ -629,6 +631,142 @@ ${buffer.join("\n")}`;
     bot.on("callback_query:data", async (ctx, next) => {
         const data = ctx.callbackQuery.data;
 
+        // Inline button handling for brief, vibe, sentinel, deals, GitHub
+        if (data.startsWith("brief:")) {
+            const telegramId = ctx.from.id;
+            if (data === "brief:read") {
+                try {
+                    const profile = await getUserProfile(telegramId);
+                    const cache = profile.briefCache as any;
+                    if (!cache) {
+                        await ctx.answerCallbackQuery({ text: "No cached brief available." });
+                        return;
+                    }
+                    const lines = [
+                        "📖 Full Brief",
+                        cache.headlines ?? "",
+                        cache.mentions ?? "",
+                        cache.calendar ?? "",
+                        cache.weather ?? "",
+                        cache.reminders ?? "",
+                        cache.vibe ?? "",
+                    ].filter(Boolean).join("\n");
+                    await ctx.api.sendMessage(ctx.chat!.id, lines, { parse_mode: "Markdown" });
+                } catch (err) {
+                    console.warn("[callback] brief:read failed", err);
+                }
+            }
+            if (data === "brief:follow") {
+                const inOneHour = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+                await createReminder(telegramId, "Follow up on daily brief", inOneHour).catch(() => null);
+                await ctx.api.sendMessage(ctx.chat!.id, "📌 Follow-up scheduled in ~1 hour.");
+            }
+            await ctx.answerCallbackQuery({ text: "Got it." });
+            return;
+        }
+
+        if (data.startsWith("vibe:")) {
+            const telegramId = ctx.from.id;
+            const label = data.split(":")[1];
+            if (label === "yes") {
+                const in30 = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+                await createReminder(telegramId, "Take a 30-min recharge break.", in30).catch(() => null);
+            } else if (label === "later") {
+                const in3h = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+                await createReminder(telegramId, "Vibe check follow-up.", in3h).catch(() => null);
+            }
+            const msg = label === "yes"
+                ? "✅ Recharge scheduled."
+                : label === "later"
+                    ? "⏰ I’ll remind you later."
+                    : "👍 Staying focused.";
+            await ctx.answerCallbackQuery({ text: msg });
+            return;
+        }
+
+        if (data.startsWith("sentinel:")) {
+            if (data.endsWith("approve")) {
+                try {
+                    const profile = await getUserProfile(ctx.from.id);
+                    const cache = (profile.prefs as any)?.sentinelCache as Array<{ handle: string; text: string }>; 
+                    if (!cache || cache.length === 0) {
+                        await ctx.answerCallbackQuery({ text: "No cached digest." });
+                        return;
+                    }
+
+                    const ai = new GoogleGenerativeAI(config.GEMINI_API_KEY);
+                    const model = ai.getGenerativeModel({ model: config.GEMINI_MODEL });
+                    const prompt = [
+                        "Draft concise reply suggestions (<=220 chars) for these VIP tweets.",
+                        "Tone: warm, direct, no hashtags unless natural.",
+                        "Return numbered replies with the handle in each line.",
+                        "Tweets:",
+                        ...cache.map((t, i) => `${i + 1}) @${t.handle}: ${t.text}`),
+                    ].join("\n");
+                    const result = await model.generateContent(prompt);
+                    const draftsRaw = result.response.text().trim();
+                    const draftLines = draftsRaw
+                        .split(/\r?\n/)
+                        .map((l) => l.trim())
+                        .filter(Boolean);
+
+                    ctx.session.pendingMentions = cache.map((item, idx) => {
+                        const label = SENTINEL_LABELS[idx] ?? String(idx + 1);
+                        const draft = draftLines[idx] ?? draftLines[draftLines.length - 1] ?? item.text;
+                        return {
+                            label,
+                            id: (cache as any)[idx].id ?? "",
+                            authorId: item.handle,
+                            authorUsername: item.handle,
+                            text: item.text,
+                            suggestedReply: draft,
+                        } as any;
+                    });
+
+                    const preview = ctx.session.pendingMentions
+                        .map((p) => `*[${p.label}]* @${p.authorUsername}: ${p.suggestedReply}`)
+                        .join("\n\n");
+
+                    await ctx.api.sendMessage(
+                        ctx.chat!.id,
+                        `🛰️ Reply drafts ready. Say "reply to A" etc.\n\n${preview}`,
+                        { parse_mode: "Markdown" }
+                    );
+                } catch (err) {
+                    console.warn("[callback] sentinel approve failed", err);
+                    await ctx.api.sendMessage(ctx.chat!.id, "⚠️ Failed to generate reply drafts. Try again later.");
+                }
+                await ctx.answerCallbackQuery({ text: "Drafting..." });
+                return;
+            }
+            await ctx.answerCallbackQuery({ text: "Ignored." });
+            return;
+        }
+
+        if (data.startsWith("deals:")) {
+            if (data.endsWith("remind")) {
+                const telegramId = ctx.from.id;
+                const in6h = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+                await createReminder(telegramId, "Recheck deals", in6h).catch(() => null);
+            }
+            await ctx.answerCallbackQuery({ text: data.endsWith("remind") ? "Will remind later." : "Dismissed." });
+            return;
+        }
+
+        if (data.startsWith("gh:")) {
+            if (data.endsWith("draft")) {
+                const text = ctx.callbackQuery.message?.text ?? "";
+                const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+                const body = lines.slice(2); // drop header lines
+                const draft = body.length > 0
+                    ? `GitHub check-in: ${body.join(" | ")}`.slice(0, 260)
+                    : "GitHub check-in: shipping steady. #buildinpublic";
+                await ctx.api.sendMessage(ctx.chat!.id, `Draft idea:\n${draft}`);
+            }
+            await ctx.answerCallbackQuery({ text: data.endsWith("draft") ? "Draft ready." : "Dismissed." });
+            return;
+        }
+
         if (data === "privacy:cancel") {
             await ctx.api.editMessageText(
                 ctx.chat!.id,
@@ -850,6 +988,7 @@ ${buffer.join("\n")}`;
             await ctx.reply(`❌ Failed to remove credentials: ${err.message}`);
         }
     });
+
 
     // ── Callback Queries (Inline Buttons) ──────────────────────────────────────
     bot.on("callback_query:data", async (ctx) => {
