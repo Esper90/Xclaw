@@ -67,7 +67,18 @@ export async function registerAndSubscribeWebhook(
             console.log(`[webhookManager] Found existing webhook ${webhookId} (valid: ${isValid})`);
             if (!isValid) {
                 console.log(`[webhookManager] Triggering CRC re-validation for ${webhookId}…`);
-                await (appClient.v2 as any).put(`webhooks/${webhookId}`);
+                try {
+                    await (appClient.v2 as any).put(`webhooks/${webhookId}`);
+                } catch (crcErr: any) {
+                    console.warn(`[webhookManager] CRC re-validation failed for ${webhookId}, deleting and recreating:`, crcErr?.message ?? crcErr);
+                    try {
+                        await (appClient.v2 as any).delete(`webhooks/${webhookId}`);
+                        webhookId = null; // force re-register below
+                    } catch (delErr: any) {
+                        console.warn(`[webhookManager] Failed to delete webhook ${webhookId}:`, delErr?.message ?? delErr);
+                        webhookId = null; // still force re-register to avoid stale hook
+                    }
+                }
             }
         }
     } catch (err) {

@@ -49,6 +49,7 @@ export function startVibeCheckWatcher(
                 const profile = await getUserProfile(telegramId);
                 const freqDays = profile.vibeCheckFreqDays ?? DEFAULT_FREQ_DAYS;
                 const prefs = (profile.prefs ?? {}) as Record<string, any>;
+                if (prefs.vibeEnabled === false) continue;
                 if (isQuiet(prefs)) continue;
                 const lastSent = prefs.vibeLastSentAt as string | undefined;
 
