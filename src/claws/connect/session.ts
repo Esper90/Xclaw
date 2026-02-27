@@ -69,7 +69,10 @@ export interface SessionData {
         | "wishlist"
         | "repos"
         | "content_niche"
-        | "news_topics";
+        | "news_topics"
+        | "news_cadence"
+        | "quiet_hours"
+        | "tavily_limit";
     /** Whether to receive proactive heartbeat messages */
     heartbeatEnabled: boolean;
     /** Whether voice inputs should be transcribed and saved without an AI reply */

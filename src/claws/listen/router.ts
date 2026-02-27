@@ -31,11 +31,11 @@ function normalizeHabits(prefs: Record<string, unknown> | null | undefined): Hab
     const habits = Array.isArray((prefs as any)?.habits) ? (prefs as any).habits : [];
     return habits
         .map((h: any) => ({
-            name: String(h.name || "").trim(),
-            targetPerDay: Number(h.targetPerDay) || undefined,
-            unit: h.unit ? String(h.unit) : undefined,
+            name: String(h?.name || "").trim(),
+            targetPerDay: Number((h as any)?.targetPerDay) || undefined,
+            unit: (h as any)?.unit ? String((h as any).unit) : undefined,
         }))
-        .filter((h) => h.name.length > 0);
+        .filter((h: HabitPref) => h.name.length > 0);
 }
 
 /**

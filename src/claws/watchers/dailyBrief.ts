@@ -73,7 +73,7 @@ async function buildHeadlinesSection(
     setDigest: (digest: { topics: string[]; bullets: string[]; ts: number }) => void
 ): Promise<string> {
     const existing = (prefs as any).newsDigest as { bullets?: string[]; ts?: number; topics?: string[] } | undefined;
-    const topics = Array.isArray((prefs as any).newsTopics) ? (prefs as any).newsTopics as string[] : [];
+    const topics: string[] = Array.isArray((prefs as any).newsTopics) ? (prefs as any).newsTopics as string[] : [];
     const now = Date.now();
     const fresh = existing?.bullets && existing.bullets.length > 0 && typeof existing.ts === "number" && now - existing.ts < NEWS_CACHE_MAX_AGE_MS;
 
