@@ -1,28 +1,40 @@
 import cron from "node-cron";
 import { listAllUsers } from "../../db/userStore";
 import { getUserProfile, updateUserProfile } from "../../db/profileStore";
-import { performTavilySearch } from "../wire/tools/web_search";
 import { checkAndConsumeTavilyBudget } from "../sense/apiBudget";
+import { fetchCuratedNewsDigest } from "../sense/newsDigest";
+import { getLocalDayKey, getLocalHour } from "../sense/time";
 
 const CHECK_CRON = "0 */1 * * *"; // global poll; per-user cadence enforced via prefs
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-function isQuiet(prefs: Record<string, any>): boolean {
+type SavedDigest = {
+    bullets?: string[];
+    ts?: number;
+    dayKey?: string;
+};
+
+function isQuiet(prefs: Record<string, any>, timezone: string | null | undefined): boolean {
     if ((prefs as any).quietAll) return true;
     const start = Number(prefs.quietHoursStart);
     const end = Number(prefs.quietHoursEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
     if (start === end) return false; // zero window
-    const hour = new Date().getHours();
+    const hour = getLocalHour(timezone);
     if (start < end) return hour >= start && hour < end;
     return hour >= start || hour < end; // crosses midnight
 }
 
-function formatNews(raw: string): string[] {
-    return raw
-        .split(/\r?\n/)
-        .map((l) => l.replace(/^[-•\d\.\)]+\s*/, "").trim())
-        .filter(Boolean)
-        .slice(0, 5);
+function getFreshCachedBullets(
+    digest: SavedDigest | undefined,
+    timezone: string | null | undefined,
+    maxItems = 3
+): string[] {
+    if (!digest?.bullets?.length || typeof digest.ts !== "number") return [];
+    if (Date.now() - digest.ts > DAY_MS) return [];
+    const dayKey = digest.dayKey ?? getLocalDayKey(timezone, digest.ts);
+    if (dayKey !== getLocalDayKey(timezone)) return [];
+    return digest.bullets.slice(0, maxItems);
 }
 
 export function startNewsCuratorWatcher(
@@ -38,56 +50,64 @@ export function startNewsCuratorWatcher(
                 const profile = await getUserProfile(telegramId);
                 const prefs = (profile.prefs || {}) as Record<string, any>;
                 if (prefs.newsEnabled === false) continue;
-                const topics = Array.isArray(prefs.newsTopics) ? prefs.newsTopics.filter((t: any) => typeof t === "string" && t.trim()) : [];
+
+                const topics = Array.isArray(prefs.newsTopics)
+                    ? prefs.newsTopics.filter((t: any) => typeof t === "string" && t.trim())
+                    : [];
                 if (!topics.length) continue;
 
-                // Per-user cadence: skip if they've asked for slower fetches
                 const intervalHours = Number.isFinite(prefs.newsFetchIntervalHours)
                     ? Math.max(0, Math.min(48, Number(prefs.newsFetchIntervalHours)))
                     : 3;
                 const lastTs = (prefs.newsDigest as any)?.ts as number | undefined;
                 const sinceLast = lastTs ? Date.now() - lastTs : Infinity;
-                if (intervalHours === 0) continue; // user disabled proactive news
+                if (intervalHours === 0) continue;
                 if (sinceLast < intervalHours * 60 * 60 * 1000) continue;
-                if (isQuiet(prefs)) continue; // respect quiet hours / master quiet
+                if (isQuiet(prefs, profile.timezone)) continue;
 
-                const query = `top news for ${topics.join(", ")} today, 3 concise bullets with sources`;
+                const oldDigest = (prefs.newsDigest as SavedDigest | undefined);
                 let bullets: string[] = [];
                 let note = "";
-                const prevDigest = (prefs.newsDigest as any)?.bullets as string[] | undefined;
 
                 const budget = await checkAndConsumeTavilyBudget(telegramId);
                 if (!budget.allowed) {
                     note = `(search skipped: ${budget.reason})`;
-                    bullets = prevDigest ?? [];
+                    bullets = getFreshCachedBullets(oldDigest, profile.timezone);
                 } else {
                     try {
-                        const raw = await performTavilySearch(query, 4);
-                        bullets = formatNews(raw);
-                        // persist shared digest for brief reuse
-                        const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
-                        (newPrefs as any).newsDigest = { topics, bullets, ts: Date.now() };
-                        await updateUserProfile(telegramId, { prefs: newPrefs });
-                    } catch (err) {
-                        note = "(search failed, using last saved topics if any)";
-                        bullets = prevDigest ?? [];
+                        const live = await fetchCuratedNewsDigest(topics, {
+                            maxItems: 3,
+                            timezone: profile.timezone,
+                            includeX: true,
+                        });
+                        bullets = live.bullets;
+                        note = `(fresh today: ${live.sameDayCount}/${Math.max(live.bullets.length, 1)}${live.hasXSource ? ", x pulse included" : ""})`;
+                    } catch (err: any) {
+                        note = `(search failed: ${err?.message ?? "error"})`;
+                        bullets = getFreshCachedBullets(oldDigest, profile.timezone);
                     }
                 }
 
                 if (bullets.length === 0) {
                     bullets = topics.slice(0, 3).map((t: string) => `Track: ${t}`);
+                    note = note || "(no fresh headlines yet)";
                 }
 
                 try {
                     const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
-                    (newPrefs as any).newsDigest = { topics, bullets, ts: Date.now() };
+                    (newPrefs as any).newsDigest = {
+                        topics,
+                        bullets,
+                        ts: Date.now(),
+                        dayKey: getLocalDayKey(profile.timezone),
+                    };
                     await updateUserProfile(telegramId, { prefs: newPrefs });
                 } catch (err) {
                     console.warn(`[news-curator] Failed to cache digest for ${telegramId}:`, err);
                 }
 
                 const message = [
-                    "📰 Curated News",
+                    "News: Curated Digest",
                     `Topics: ${topics.join(", ")}${note ? " " + note : ""}`.trim(),
                     "",
                     bullets.map((b, i) => `${i + 1}. ${b}`).join("\n"),
@@ -114,5 +134,5 @@ export function startNewsCuratorWatcher(
         }
     });
 
-    console.log(`[news-curator] Scheduler active — cron: "${CHECK_CRON}"`);
+    console.log(`[news-curator] Scheduler active - cron: "${CHECK_CRON}"`);
 }

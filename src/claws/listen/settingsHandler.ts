@@ -4,6 +4,7 @@ import { getUser, upsertUser } from "../../db/userStore.js";
 import { hasHeartbeatSettings } from "../sense/heartbeat.js";
 import { getUserProfile, updateUserProfile } from "../../db/profileStore";
 import { DEFAULT_TAVILY_DAILY_MAX, DEFAULT_X_HOURLY_MAX } from "../sense/apiBudget";
+import { getLocalDayKey, normalizeTimeZoneOrNull } from "../sense/time";
 
 /**
  * Builds the inline keyboard for the Settings menu
@@ -36,7 +37,7 @@ async function buildSettingsKeyboard(telegramId: number) {
     const sentinelInterval = Number((profile.prefs as any)?.sentinelIntervalMins) || 30;
 
     const usage = ((profile.prefs as any)?.usage ?? {}) as Record<string, any>;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDayKey(user.timezone ?? profile.timezone ?? null);
     const tavilyCount = usage.tavily?.day === today ? usage.tavily.count ?? 0 : 0;
     const xCount = usage.x?.day === today ? usage.x.count ?? 0 : 0;
     const vipLabel = profile.vipList && profile.vipList.length > 0 ? `${profile.vipList.length} handles` : "Not Set";
@@ -77,10 +78,10 @@ async function buildSettingsKeyboard(telegramId: number) {
     return keyboard;
 }
 
-function buildUsageSummary(profile: any): string {
+function buildUsageSummary(profile: any, timezone?: string | null): string {
     const prefs = (profile?.prefs || {}) as Record<string, any>;
     const usage = (prefs.usage ?? {}) as Record<string, any>;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDayKey(timezone ?? profile?.timezone ?? null);
     const tavilyCount = usage.tavily?.day === today ? usage.tavily.count ?? 0 : 0;
     const xDayCount = usage.x?.day === today ? usage.x.count ?? 0 : 0;
     const tavilyLimit = prefs.tavilyDailyLimit ?? DEFAULT_TAVILY_DAILY_MAX;
@@ -94,9 +95,10 @@ function buildUsageSummary(profile: any): string {
 export async function handleSettingsCommand(ctx: BotContext) {
     const telegramId = ctx.from!.id;
     try {
+        const user = await getUser(telegramId);
         const profile = await getUserProfile(telegramId);
         const keyboard = await buildSettingsKeyboard(telegramId);
-        const usageLine = buildUsageSummary(profile);
+        const usageLine = buildUsageSummary(profile, user?.timezone ?? profile.timezone);
 
         // Always remind them of Voice context
         const voiceStatus = ctx.session.voiceEnabled ? "ON 🎙️" : "OFF 🔇";
@@ -417,8 +419,11 @@ export async function handleSettingTextInput(ctx: BotContext, text: string): Pro
 
     try {
         if (settingType === "timezone") {
-            user.timezone = text.trim();
+            const normalized = normalizeTimeZoneOrNull(text);
+            if (!normalized) throw new Error("Invalid timezone. Use an IANA zone like America/New_York.");
+            user.timezone = normalized;
             await upsertUser(user);
+            await updateUserProfile(telegramId, { timezone: normalized });
             await ctx.reply(`✅ Timezone updated to \`${user.timezone}\`.`, { parse_mode: "Markdown" });
         }
         else if (settingType === "dm_allowlist") {

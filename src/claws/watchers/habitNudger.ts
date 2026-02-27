@@ -1,17 +1,18 @@
 import cron from "node-cron";
 import { listAllUsers } from "../../db/userStore";
 import { getUserProfile } from "../../db/profileStore";
+import { getLocalDayKey, getLocalHour } from "../sense/time";
 
 const CHECK_CRON = "15 17 * * *"; // daily 17:15 UTC
 const PAGE_SIZE = 4;
 
-function isQuiet(prefs: Record<string, any>): boolean {
+function isQuiet(prefs: Record<string, any>, timezone: string | null | undefined): boolean {
     if ((prefs as any).quietAll) return true;
     const start = Number(prefs.quietHoursStart);
     const end = Number(prefs.quietHoursEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
     if (start === end) return false;
-    const hour = new Date().getHours();
+    const hour = getLocalHour(timezone);
     if (start < end) return hour >= start && hour < end;
     return hour >= start || hour < end;
 }
@@ -29,13 +30,13 @@ export function startHabitNudgerWatcher(
                 const profile = await getUserProfile(telegramId);
                 const prefs = (profile.prefs || {}) as Record<string, any>;
                 if (prefs.habitsEnabled === false) continue;
-                if (isQuiet(prefs)) continue;
+                if (isQuiet(prefs, profile.timezone)) continue;
 
                 const habits = Array.isArray(prefs.habits) ? prefs.habits : [];
                 if (!habits.length) continue;
 
                 const log = (prefs as any)?.habitLog || {};
-                const today = new Date().toISOString().slice(0, 10);
+                const today = getLocalDayKey(profile.timezone);
 
                 const page = 0; // single page for now; extend with pagination callback if needed
 

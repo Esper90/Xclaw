@@ -22,6 +22,8 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { consumeToken } from "../sense/rateLimiter";
 import { InputFile, InlineKeyboard } from "grammy";
 import { recordInteraction } from "../archive/buffer";
+import { getLocalDayKey } from "../sense/time";
+import { registry } from "../wire/tools/registry";
 
 const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
 const SENTINEL_LABELS = DM_LABELS;
@@ -187,7 +189,7 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
                 return;
             }
             const log = (profile.prefs as any)?.habitLog || {};
-            const today = new Date().toISOString().slice(0, 10);
+            const today = getLocalDayKey(profile.timezone);
             const lines = habits.map((h, i) => {
                 const key = h.name.toLowerCase();
                 const entry = log[key] && log[key].date === today ? log[key] : null;
@@ -866,6 +868,49 @@ ${buffer.join("\n")}`;
             return;
         }
 
+        if (data.startsWith("news:")) {
+            if (data === "news:dismiss") {
+                await ctx.answerCallbackQuery({ text: "Dismissed." });
+                await ctx.deleteMessage().catch(() => null);
+                return;
+            }
+
+            if (data === "news:refresh") {
+                const reply_markup = {
+                    inline_keyboard: [
+                        [
+                            { text: "Refresh", callback_data: "news:refresh" },
+                            { text: "Dismiss", callback_data: "news:dismiss" },
+                        ],
+                    ],
+                };
+
+                try {
+                    const refreshed = await registry.dispatch(
+                        "custom_news_curator",
+                        { maxItems: 3, userId: ctx.from.id },
+                        { ctx, userId: String(ctx.from.id) }
+                    );
+                    await ctx.api.editMessageText(
+                        ctx.chat!.id,
+                        ctx.callbackQuery.message!.message_id,
+                        refreshed,
+                        { reply_markup }
+                    );
+                    await ctx.answerCallbackQuery({ text: "News refreshed." });
+                } catch (err: any) {
+                    await ctx.answerCallbackQuery({
+                        text: `Refresh failed: ${err?.message ?? "error"}`,
+                        show_alert: true,
+                    });
+                }
+                return;
+            }
+
+            await ctx.answerCallbackQuery();
+            return;
+        }
+
         if (data === "privacy:cancel") {
             await ctx.api.editMessageText(
                 ctx.chat!.id,
@@ -1140,7 +1185,7 @@ ${buffer.join("\n")}`;
             const habit = habits[idx];
             const key = habit.name.trim().toLowerCase();
             const log = (profile.prefs as any)?.habitLog || {};
-            const today = new Date().toISOString().slice(0, 10);
+            const today = getLocalDayKey(profile.timezone);
             const entry = log[key] && log[key].date === today
                 ? log[key]
                 : { date: today, total: 0, lastDone: null };

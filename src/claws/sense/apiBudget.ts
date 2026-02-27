@@ -1,4 +1,5 @@
 import { getUserProfile, updateUserProfile } from "../../db/profileStore";
+import { getLocalDayKey } from "./time";
 
 // Budget ceilings (configurable via envs; exposed for settings UI)
 export const DEFAULT_TAVILY_DAILY_MAX = Number(process.env.TAVILY_DAILY_MAX ?? 12); // raised from 6
@@ -28,10 +29,11 @@ function resolveCeiling(raw: unknown, fallback: number, min = 1, max = 100): num
 function setUsageCounters(
     prefs: Record<string, unknown>,
     key: "tavily" | "x",
-    count: number
+    count: number,
+    timezone: string | null | undefined
 ): Record<string, unknown> {
     const next = { ...prefs } as Record<string, any>;
-    const dayKey = new Date().toISOString().slice(0, 10);
+    const dayKey = getLocalDayKey(timezone);
     const usage = (next.usage ?? {}) as Record<string, any>;
     usage[key] = { day: dayKey, count };
     next.usage = usage;
@@ -57,7 +59,7 @@ export async function checkAndConsumeTavilyBudget(telegramId: number): Promise<B
         return { allowed: false, reason: `Daily Tavily limit reached (${ceiling})` };
     }
 
-    const nextPrefs = setUsageCounters(prefs, "tavily", calls + 1);
+    const nextPrefs = setUsageCounters(prefs, "tavily", calls + 1, profile.timezone);
 
     await updateUserProfile(telegramId, {
         tavilyCallsToday: calls + 1,
@@ -77,7 +79,7 @@ export async function checkAndConsumeXBudget(telegramId: number): Promise<Budget
     let calls = profile.xCallsHour ?? 0;
     let resetAt = profile.xCallsResetAt;
     let dayCalls = (prefs as any)?.usage?.x?.count as number | undefined;
-    const dayKey = new Date().toISOString().slice(0, 10);
+    const dayKey = getLocalDayKey(profile.timezone);
     const lastDay = (prefs as any)?.usage?.x?.day as string | undefined;
     if (!Number.isFinite(dayCalls) || lastDay !== dayKey) dayCalls = 0;
 
@@ -90,7 +92,7 @@ export async function checkAndConsumeXBudget(telegramId: number): Promise<Budget
         return { allowed: false, reason: `Hourly X API limit reached (${ceiling})` };
     }
 
-    const nextPrefs = setUsageCounters(prefs, "x", (dayCalls ?? 0) + 1);
+    const nextPrefs = setUsageCounters(prefs, "x", (dayCalls ?? 0) + 1, profile.timezone);
 
     await updateUserProfile(telegramId, {
         xCallsHour: calls + 1,

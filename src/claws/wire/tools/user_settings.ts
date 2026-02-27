@@ -1,6 +1,8 @@
 import { SchemaType } from "@google/generative-ai";
 import { registry, McpTool } from "./registry";
 import { getUser, upsertUser } from "../../../db/userStore";
+import { updateUserProfile } from "../../../db/profileStore";
+import { normalizeTimeZoneOrNull } from "../../sense/time";
 
 export const updateUserSettingsTool: McpTool = {
     name: "update_user_settings",
@@ -19,7 +21,12 @@ export const updateUserSettingsTool: McpTool = {
             }
 
             if (args.timezone) {
-                user.timezone = args.timezone;
+                const normalized = normalizeTimeZoneOrNull(args.timezone);
+                if (!normalized) {
+                    return "❌ Invalid timezone. Use an IANA zone like America/New_York.";
+                }
+                user.timezone = normalized;
+                await updateUserProfile(userId, { timezone: normalized });
             }
 
             await upsertUser(user);

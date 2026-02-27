@@ -2,10 +2,11 @@ import cron from "node-cron";
 import { hasUserXCreds } from "../../db/getUserClient";
 import { listAllUsers } from "../../db/userStore";
 import { getUserProfile, updateUserProfile } from "../../db/profileStore";
-import { performTavilySearch } from "../wire/tools/web_search";
 import { checkAndConsumeTavilyBudget, checkAndConsumeXBudget } from "../sense/apiBudget";
 import { fetchMentions } from "../wire/xButler";
 import { getUpcomingReminders } from "../../db/reminders";
+import { fetchCuratedNewsDigest } from "../sense/newsDigest";
+import { getLocalDayKey } from "../sense/time";
 
 const CHECK_CRON = "*/5 * * * *"; // check every 5 minutes
 const BRIEF_WINDOW_MINUTES = 10; // fire within 10 minutes after 07:30 local
@@ -59,23 +60,32 @@ function formatBulletList(lines: string[], max = 5): string {
 function formatWithTz(iso: string, timezone: string | null | undefined): string {
     const formatter = new Intl.DateTimeFormat("en-US", {
         timeZone: timezone || "UTC",
+        hour12: true,
         month: "short",
         day: "numeric",
         hour: "2-digit",
         minute: "2-digit",
+        timeZoneName: "short",
     });
     return formatter.format(new Date(iso));
 }
 
 async function buildHeadlinesSection(
     telegramId: number,
+    timezone: string | null | undefined,
     prefs: Record<string, unknown>,
-    setDigest: (digest: { topics: string[]; bullets: string[]; ts: number }) => void
+    setDigest: (digest: { topics: string[]; bullets: string[]; ts: number; dayKey?: string }) => void
 ): Promise<string> {
-    const existing = (prefs as any).newsDigest as { bullets?: string[]; ts?: number; topics?: string[] } | undefined;
+    const existing = (prefs as any).newsDigest as { bullets?: string[]; ts?: number; topics?: string[]; dayKey?: string } | undefined;
     const topics: string[] = Array.isArray((prefs as any).newsTopics) ? (prefs as any).newsTopics as string[] : [];
     const now = Date.now();
-    const fresh = existing?.bullets && existing.bullets.length > 0 && typeof existing.ts === "number" && now - existing.ts < NEWS_CACHE_MAX_AGE_MS;
+    const localDayKey = getLocalDayKey(timezone);
+    const cacheDayKey = existing?.dayKey ?? (typeof existing?.ts === "number" ? getLocalDayKey(timezone, existing.ts) : null);
+    const fresh = existing?.bullets
+        && existing.bullets.length > 0
+        && typeof existing.ts === "number"
+        && now - existing.ts < NEWS_CACHE_MAX_AGE_MS
+        && cacheDayKey === localDayKey;
 
     if (fresh) {
         const cached = existing!.bullets as string[];
@@ -92,16 +102,15 @@ async function buildHeadlinesSection(
     }
 
     try {
-        const query = topics.length ? `top news for ${topics.join(", ")}, 5 concise bullets` : "today's top world and tech news headlines, 5 concise bullets";
-        const raw = await performTavilySearch(query, 5);
-        const bullets = raw
-            .split("\n")
-            .filter((line) => line.includes("]("))
-            .map((line) => line.trim())
-            .slice(0, 5);
+        const live = await fetchCuratedNewsDigest(topics, {
+            maxItems: 5,
+            timezone,
+            includeX: true,
+        });
+        const bullets = live.bullets;
 
         if (!bullets.length) return "Headlines: No relevant search results.";
-        setDigest({ topics, bullets, ts: now });
+        setDigest({ topics, bullets, ts: now, dayKey: localDayKey });
         return `Headlines:\n${formatBulletList(bullets)}`;
     } catch (err: any) {
         console.warn(`[daily-brief] Tavily failed for ${telegramId}:`, err);
@@ -203,13 +212,18 @@ function renderBrief(sections: BriefSections): string {
         .join("\n");
 }
 
-function isQuiet(prefs: Record<string, any>): boolean {
+function isQuiet(prefs: Record<string, any>, timezone: string | null | undefined): boolean {
     if ((prefs as any).quietAll) return true;
     const start = Number(prefs.quietHoursStart);
     const end = Number(prefs.quietHoursEnd);
     if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
     if (start === end) return false;
-    const hour = new Date().getHours();
+    const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone || "UTC",
+        hour12: false,
+        hour: "2-digit",
+    });
+    const hour = parseInt(formatter.formatToParts(new Date()).find((p) => p.type === "hour")?.value ?? "0", 10);
     if (start < end) return hour >= start && hour < end;
     return hour >= start || hour < end;
 }
@@ -226,7 +240,7 @@ export function startDailyBriefWatcher(
                 const telegramId = user.telegram_id;
                 const profile = await getUserProfile(telegramId);
                 const prefs = (profile.prefs || {}) as Record<string, any>;
-                if (isQuiet(prefs)) continue;
+                if (isQuiet(prefs, profile.timezone)) continue;
                 const newsEnabled = prefs.newsEnabled !== false;
 
                 if (sentRecently(profile.briefLastSentAt)) continue;
@@ -238,7 +252,7 @@ export function startDailyBriefWatcher(
                 let prefsChanged = false;
                 const sections: BriefSections = {
                     headlines: newsEnabled
-                        ? await buildHeadlinesSection(telegramId, prefs, (digest) => {
+                        ? await buildHeadlinesSection(telegramId, profile.timezone, prefs, (digest) => {
                             newPrefs.newsDigest = digest;
                             prefsChanged = true;
                         })
