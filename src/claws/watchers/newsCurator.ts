@@ -4,7 +4,7 @@ import { getUserProfile, updateUserProfile } from "../../db/profileStore";
 import { performTavilySearch } from "../wire/tools/web_search";
 import { checkAndConsumeTavilyBudget } from "../sense/apiBudget";
 
-const CHECK_CRON = "0 */3 * * *"; // every 3 hours
+const CHECK_CRON = "0 */1 * * *"; // global poll; per-user cadence enforced via prefs
 
 function formatNews(raw: string): string[] {
     return raw
@@ -28,6 +28,15 @@ export function startNewsCuratorWatcher(
                 const prefs = (profile.prefs || {}) as Record<string, any>;
                 const topics = Array.isArray(prefs.newsTopics) ? prefs.newsTopics.filter((t: any) => typeof t === "string" && t.trim()) : [];
                 if (!topics.length) continue;
+
+                // Per-user cadence: skip if they've asked for slower fetches
+                const intervalHours = Number.isFinite(prefs.newsFetchIntervalHours)
+                    ? Math.max(0, Math.min(48, Number(prefs.newsFetchIntervalHours)))
+                    : 3;
+                const lastTs = (prefs.newsDigest as any)?.ts as number | undefined;
+                const sinceLast = lastTs ? Date.now() - lastTs : Infinity;
+                if (intervalHours === 0) continue; // user disabled proactive news
+                if (sinceLast < intervalHours * 60 * 60 * 1000) continue;
 
                 const query = `top news for ${topics.join(", ")} today, 3 concise bullets with sources`;
                 let bullets: string[] = [];

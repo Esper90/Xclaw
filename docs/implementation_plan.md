@@ -17,9 +17,9 @@
 - BYOK gate for all X actions: use the existing 4-key OAuth1 creds from `/setup` (stored in Supabase, resolved via `getUserXClient`). No bearer key required.
 - Supabase remains system of record for profile/limits (new columns already added); Pinecone is for vectors/summaries only.
 - Use the profile helper (already added) to read/write timezone, vip_list, wishlist, watched_repos, brief_last_sent_at, vibe_check_freq_days, last_tweet_ids, tavily/x call counters + resets, brief_cache, prefs.
-- Rate-limit middleware: Tavily ≤2/day/user; X ≤3/hour/user. Store counters/resets in Supabase; enforce before tool execute() using the budget helper stub (claws/sense/apiBudget.ts) as a starting point.
+- Rate-limit middleware: Tavily ≤12/day/user by default (user-configurable in Settings); X ≤3/hour/user. Store counters/resets in Supabase; enforce before tool execute() using the budget helper stub (claws/sense/apiBudget.ts) as a starting point.
 - Caching: Pinecone TTL (≈1h) for expensive fetches (X data, Tavily results, thread summaries); avoid duplicate API calls.
-- Cron location: follow existing node-cron pattern (e.g., heartbeat, xButler). Add new schedulers in a dedicated folder (e.g., src/claws/watchers) and register them from index.ts; skip X-related crons when no creds.
+- Cron location: follow existing node-cron pattern (e.g., heartbeat, xButler). Add new schedulers in a dedicated folder (e.g., src/claws/watchers) and register them from index.ts; skip X-related crons when no creds; per-user news cadence should be adjustable from Settings (including disabling proactive fetches).
 - Output: Telegram-friendly markdown with inline buttons (approve/post/ignore/schedule). Persist important summaries/decisions to Pinecone memories.
 - Logging + error handling: structured console logs; no unhandled rejections; loops never crash on single failure.
 - Env toggles: cron intervals, cache TTLs, and rate-limit ceilings configurable for dev.

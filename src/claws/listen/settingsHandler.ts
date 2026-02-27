@@ -24,6 +24,8 @@ async function buildSettingsKeyboard(telegramId: number) {
     const contentMode = Boolean((profile.prefs as any)?.contentMode);
     const contentNiche = (profile.prefs as any)?.contentNiche as string | undefined;
     const newsTopics = Array.isArray((profile.prefs as any)?.newsTopics) ? (profile.prefs as any).newsTopics as string[] : [];
+    const tavilyLimit = (profile.prefs as any)?.tavilyDailyLimit ?? undefined;
+    const newsCadenceHours = (profile.prefs as any)?.newsFetchIntervalHours ?? undefined;
     const vipLabel = profile.vipList && profile.vipList.length > 0 ? `${profile.vipList.length} handles` : "Not Set";
     const vibeLabel = profile.vibeCheckFreqDays ? `${profile.vibeCheckFreqDays}d` : "3d";
     const wishlistLabel = profile.wishlist && profile.wishlist.length > 0 ? `${profile.wishlist.length} items` : "Empty";
@@ -43,7 +45,9 @@ async function buildSettingsKeyboard(telegramId: number) {
         .text(`🛠️ GitHub Repos: ${reposLabel}`, "settings:set_repos").row()
         .text(`🧠 Content Mode: ${contentMode ? "ON" : "OFF"}`, "settings:toggle_content_mode").row()
         .text(`💡 Content Niche: ${contentNiche ? contentNiche : "Not Set"}`, "settings:set_content_niche").row()
-        .text(`📰 News Topics: ${newsLabel}`, "settings:set_news_topics").row();
+        .text(`📰 News Topics: ${newsLabel}`, "settings:set_news_topics").row()
+        .text(`⏳ News Cadence: ${newsCadenceHours ? `${newsCadenceHours}h` : "3h default"}`, "settings:set_news_cadence").row()
+        .text(`🔍 Tavily / day: ${tavilyLimit ?? "12 default"}`, "settings:set_tavily_limit").row();
 
     return keyboard;
 }
@@ -152,6 +156,20 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
         await ctx.answerCallbackQuery({ text: `Content mode ${newPrefs.contentMode ? "enabled" : "disabled"}.` });
         const newKeyboard = await buildSettingsKeyboard(telegramId);
         await ctx.editMessageReplyMarkup({ reply_markup: newKeyboard }).catch(() => { });
+        return;
+    }
+
+    if (data === "settings:set_news_cadence") {
+        ctx.session.awaitingSettingInput = "news_cadence";
+        await ctx.answerCallbackQuery();
+        await ctx.reply("⏳ How often should I fetch curated news? Enter hours as a number (e.g., `3`). Send `0` to disable proactive news.", { parse_mode: "Markdown" });
+        return;
+    }
+
+    if (data === "settings:set_tavily_limit") {
+        ctx.session.awaitingSettingInput = "tavily_limit";
+        await ctx.answerCallbackQuery();
+        await ctx.reply("🔍 Set your daily Tavily search cap (1–50). Higher caps allow more live searches but may exhaust your quota faster.", { parse_mode: "Markdown" });
         return;
     }
 
@@ -298,6 +316,22 @@ export async function handleSettingTextInput(ctx: BotContext, text: string): Pro
             }
             await updateUserProfile(telegramId, { prefs: newPrefs });
             await ctx.reply(`✅ News topics ${trimmed.toLowerCase() === "clear" ? "cleared" : "updated"}.`, { parse_mode: "Markdown" });
+        }
+        else if (settingType === "news_cadence") {
+            const num = parseInt(text.trim(), 10);
+            if (Number.isNaN(num) || num < 0 || num > 48) throw new Error("Enter hours between 0 and 48 (0 disables).");
+            const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+            (newPrefs as any).newsFetchIntervalHours = num;
+            await updateUserProfile(telegramId, { prefs: newPrefs });
+            await ctx.reply(`✅ News cadence set to ${num === 0 ? "disabled" : `every ${num} hour(s)`}.`, { parse_mode: "Markdown" });
+        }
+        else if (settingType === "tavily_limit") {
+            const num = parseInt(text.trim(), 10);
+            if (Number.isNaN(num) || num < 1 || num > 50) throw new Error("Enter a daily limit between 1 and 50.");
+            const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+            (newPrefs as any).tavilyDailyLimit = num;
+            await updateUserProfile(telegramId, { prefs: newPrefs });
+            await ctx.reply(`✅ Tavily daily cap set to ${num} searches.`, { parse_mode: "Markdown" });
         }
     } catch (err: any) {
         await ctx.reply(`❌ Failed to save setting: ${err.message}`);

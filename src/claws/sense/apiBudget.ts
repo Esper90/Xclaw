@@ -1,8 +1,8 @@
 import { getUserProfile, updateUserProfile } from "../../db/profileStore";
 
-// Budget ceilings (can be made configurable via envs)
-const TAVILY_DAILY_MAX = 2;
-const X_HOURLY_MAX = 3;
+// Budget ceilings (configurable via envs; exposed for settings UI)
+export const DEFAULT_TAVILY_DAILY_MAX = Number(process.env.TAVILY_DAILY_MAX ?? 12); // raised from 6
+export const DEFAULT_X_HOURLY_MAX = Number(process.env.X_HOURLY_MAX ?? 3);
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -18,11 +18,20 @@ function needsReset(ts: string | null | undefined, windowMs: number): boolean {
     return Date.now() - last >= windowMs;
 }
 
+function resolveCeiling(raw: unknown, fallback: number, min = 1, max = 100): number {
+    const num = typeof raw === "string" ? Number(raw) : typeof raw === "number" ? raw : NaN;
+    if (!Number.isFinite(num)) return fallback;
+    const clamped = Math.max(min, Math.min(max, Math.floor(num)));
+    return clamped;
+}
+
 /**
  * Check + consume Tavily budget (daily). Resets window when stale.
  */
 export async function checkAndConsumeTavilyBudget(telegramId: number): Promise<BudgetCheckResult> {
     const profile = await getUserProfile(telegramId);
+    const prefs = (profile.prefs || {}) as Record<string, unknown>;
+    const ceiling = resolveCeiling(prefs.tavilyDailyLimit, DEFAULT_TAVILY_DAILY_MAX);
     let calls = profile.tavilyCallsToday ?? 0;
     let resetAt = profile.tavilyCallsResetAt;
 
@@ -31,8 +40,8 @@ export async function checkAndConsumeTavilyBudget(telegramId: number): Promise<B
         resetAt = new Date().toISOString();
     }
 
-    if (calls >= TAVILY_DAILY_MAX) {
-        return { allowed: false, reason: "Daily Tavily limit reached" };
+    if (calls >= ceiling) {
+        return { allowed: false, reason: `Daily Tavily limit reached (${ceiling})` };
     }
 
     await updateUserProfile(telegramId, {
@@ -47,6 +56,8 @@ export async function checkAndConsumeTavilyBudget(telegramId: number): Promise<B
  */
 export async function checkAndConsumeXBudget(telegramId: number): Promise<BudgetCheckResult> {
     const profile = await getUserProfile(telegramId);
+    const prefs = (profile.prefs || {}) as Record<string, unknown>;
+    const ceiling = resolveCeiling(prefs.xHourlyLimit, DEFAULT_X_HOURLY_MAX);
     let calls = profile.xCallsHour ?? 0;
     let resetAt = profile.xCallsResetAt;
 
@@ -55,8 +66,8 @@ export async function checkAndConsumeXBudget(telegramId: number): Promise<Budget
         resetAt = new Date().toISOString();
     }
 
-    if (calls >= X_HOURLY_MAX) {
-        return { allowed: false, reason: "Hourly X API limit reached" };
+    if (calls >= ceiling) {
+        return { allowed: false, reason: `Hourly X API limit reached (${ceiling})` };
     }
 
     await updateUserProfile(telegramId, {
