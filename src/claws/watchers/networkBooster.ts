@@ -31,6 +31,7 @@ export function startNetworkBoosterWatcher(
 
                 const profile = await getUserProfile(telegramId);
                 const prefs = (profile.prefs || {}) as Record<string, any>;
+                if (prefs.networkEnabled === false) continue;
                 if (isQuiet(prefs)) continue;
                 const niche = (prefs as any)?.contentNiche as string | undefined;
 

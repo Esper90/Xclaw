@@ -80,13 +80,6 @@ function renderDigest(items: VipDigestItem[]): string {
         .join("\n");
 }
 
-function shouldSkipForCooldown(lastRunTs?: number, seenActivity?: boolean): boolean {
-    if (seenActivity) return false;
-    if (!lastRunTs) return false;
-    const since = Date.now() - lastRunTs;
-    return since < COOLDOWN_NO_ACTIVITY_MINUTES * 60 * 1000;
-}
-
 export function startTimelineSentinelWatcher(
     sendMessage: (chatId: number, text: string, extra?: { reply_markup?: any }) => Promise<void>
 ): void {
@@ -102,6 +95,7 @@ export function startTimelineSentinelWatcher(
 
                 const profile = await getUserProfile(telegramId);
                 const prefs = (profile.prefs || {}) as Record<string, any>;
+                if (prefs.sentinelEnabled === false) continue;
                 if (isQuiet(prefs)) continue;
                 const vipList = profile.vipList ?? [];
                 if (!vipList.length) {
@@ -109,16 +103,20 @@ export function startTimelineSentinelWatcher(
                     continue;
                 }
 
+                const intervalMins = Math.max(10, Math.min(180, Number(prefs.sentinelIntervalMins) || 30));
+                const lastRun = Number(prefs.sentinelLastRun) || 0;
+                const lastIdle = Number(prefs.sentinelLastIdleAt) || 0;
+                const now = Date.now();
+                const intervalMs = intervalMins * 60 * 1000;
+                const idleCooldownMs = COOLDOWN_NO_ACTIVITY_MINUTES * 60 * 1000;
+
+                if (lastRun && now - lastRun < intervalMs) continue;
+                if (lastIdle && now - lastIdle < Math.max(intervalMs, idleCooldownMs)) continue;
+
                 const lastSeen = profile.lastTweetIds ?? {};
-                        await updateUserProfile(telegramId, { prefs: { ...(profile.prefs || {}), sentinelLastRun: Date.now() } });
-                        continue;
                 const newLastSeen: Record<string, string> = { ...lastSeen };
                 const digestItems: VipDigestItem[] = [];
-
-                // If we saw nothing last run, back off to 60m before trying again
-                if (shouldSkipForCooldown(lastRun, false)) {
-                    continue;
-                }
+                let sawActivity = false;
 
                 for (const handle of vipList.slice(0, MAX_HANDLES_PER_RUN)) {
                     const budget = await checkAndConsumeXBudget(telegramId);
@@ -133,6 +131,7 @@ export function startTimelineSentinelWatcher(
                         const tweets = await fetchNewTweetsForHandle(telegramId, normalized, sinceId);
                         if (tweets.length > 0) {
                             digestItems.push(...tweets);
+                            sawActivity = true;
                             // update last seen to highest id
                             const maxId = tweets.reduce((max, t) => (t.id > max ? t.id : max), sinceId ?? "0");
                             newLastSeen[normalized] = maxId;
@@ -141,13 +140,15 @@ export function startTimelineSentinelWatcher(
                         console.warn(`[timeline-sentinel] Failed handle ${handle} for ${telegramId}:`, err);
                     }
                 }
-                        await updateUserProfile(telegramId, { prefs: { ...(profile.prefs || {}), sentinelLastRun: Date.now() }, lastTweetIds: newLastSeen });
-                        continue;
-                const prefsPatch: Record<string, any> = { sentinelLastRun: Date.now() };
+                const prefsPatch: Record<string, any> = {
+                    sentinelLastRun: now,
+                    sentinelIntervalMins: intervalMins,
+                    sentinelLastIdleAt: sawActivity ? null : now,
+                };
 
                 if (digestItems.length === 0) {
                     console.log(`[timeline-sentinel] No new VIP tweets for ${telegramId}`);
-                    await updateUserProfile(telegramId, { prefs: { ...(profile.prefs || {}), ...prefsPatch } });
+                    await updateUserProfile(telegramId, { prefs: { ...(profile.prefs || {}), ...prefsPatch }, lastTweetIds: newLastSeen });
                     continue;
                 }
 
@@ -167,6 +168,7 @@ export function startTimelineSentinelWatcher(
                         lastTweetIds: newLastSeen,
                         prefs: {
                             ...(profile.prefs ?? {}),
+                            ...prefsPatch,
                             sentinelCache: digestItems,
                         },
                     });

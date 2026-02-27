@@ -37,6 +37,7 @@ export function startNewsCuratorWatcher(
                 const telegramId = user.telegram_id;
                 const profile = await getUserProfile(telegramId);
                 const prefs = (profile.prefs || {}) as Record<string, any>;
+                if (prefs.newsEnabled === false) continue;
                 const topics = Array.isArray(prefs.newsTopics) ? prefs.newsTopics.filter((t: any) => typeof t === "string" && t.trim()) : [];
                 if (!topics.length) continue;
 

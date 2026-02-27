@@ -3,6 +3,7 @@ import type { BotContext } from "../connect/bot.js";
 import { getUser, upsertUser } from "../../db/userStore.js";
 import { hasHeartbeatSettings } from "../sense/heartbeat.js";
 import { getUserProfile, updateUserProfile } from "../../db/profileStore";
+import { DEFAULT_TAVILY_DAILY_MAX, DEFAULT_X_HOURLY_MAX } from "../sense/apiBudget";
 
 /**
  * Builds the inline keyboard for the Settings menu
@@ -26,6 +27,18 @@ async function buildSettingsKeyboard(telegramId: number) {
     const newsTopics = Array.isArray((profile.prefs as any)?.newsTopics) ? (profile.prefs as any).newsTopics as string[] : [];
     const tavilyLimit = (profile.prefs as any)?.tavilyDailyLimit ?? undefined;
     const newsCadenceHours = (profile.prefs as any)?.newsFetchIntervalHours ?? undefined;
+    const newsEnabled = (profile.prefs as any)?.newsEnabled !== false;
+    const habitsEnabled = (profile.prefs as any)?.habitsEnabled !== false;
+    const vibeEnabled = (profile.prefs as any)?.vibeEnabled !== false;
+    const dealsEnabled = (profile.prefs as any)?.dealsEnabled !== false;
+    const networkEnabled = (profile.prefs as any)?.networkEnabled !== false;
+    const sentinelEnabled = (profile.prefs as any)?.sentinelEnabled !== false;
+    const sentinelInterval = Number((profile.prefs as any)?.sentinelIntervalMins) || 30;
+
+    const usage = ((profile.prefs as any)?.usage ?? {}) as Record<string, any>;
+    const today = new Date().toISOString().slice(0, 10);
+    const tavilyCount = usage.tavily?.day === today ? usage.tavily.count ?? 0 : 0;
+    const xCount = usage.x?.day === today ? usage.x.count ?? 0 : 0;
     const vipLabel = profile.vipList && profile.vipList.length > 0 ? `${profile.vipList.length} handles` : "Not Set";
     const vibeLabel = profile.vibeCheckFreqDays ? `${profile.vibeCheckFreqDays}d` : "3d";
     const wishlistLabel = profile.wishlist && profile.wishlist.length > 0 ? `${profile.wishlist.length} items` : "Empty";
@@ -42,6 +55,12 @@ async function buildSettingsKeyboard(telegramId: number) {
         .text(`☀️ Weather: ${weatherLoc ? weatherLoc : "Not Set"}`, "settings:set_weather").text("❓", "help:weather").row()
         .text(`🌙 Quiet Hours`, "settings:set_quiet_hours").text("❓", "help:quiet_hours").row()
         .text(`🔇 Master Quiet: ${(profile.prefs as any)?.quietAll ? "ON" : "OFF"}`, "settings:toggle_quiet_master").text("❓", "help:quiet_master").row()
+        .text(`📰 News: ${newsEnabled ? "ON" : "OFF"}`, "settings:toggle_news").row()
+        .text(`📅 Habits Nudger: ${habitsEnabled ? "ON" : "OFF"}`, "settings:toggle_habits").row()
+        .text(`🧭 Vibe Check: ${vibeEnabled ? "ON" : "OFF"}`, "settings:toggle_vibe").row()
+        .text(`🛒 Deals: ${dealsEnabled ? "ON" : "OFF"}`, "settings:toggle_deals").row()
+        .text(`🤝 Network: ${networkEnabled ? "ON" : "OFF"}`, "settings:toggle_network").row()
+        .text(`🛰️ Sentinel: ${sentinelEnabled ? `${sentinelInterval}m` : "OFF"}`, "settings:toggle_sentinel").row()
         .text("📣 Signals & Safety", "settings:noop").row()
         .text(`⭐ VIP List: ${vipLabel}`, "settings:set_vips").text("❓", "help:vips").row()
         .text(`📭 DM Allowlist: ${user.dm_allowlist ? "Custom" : "All/Default"}`, "settings:set_dm_allowlist").text("❓", "help:dm_allow").row()
@@ -58,20 +77,33 @@ async function buildSettingsKeyboard(telegramId: number) {
     return keyboard;
 }
 
+function buildUsageSummary(profile: any): string {
+    const prefs = (profile?.prefs || {}) as Record<string, any>;
+    const usage = (prefs.usage ?? {}) as Record<string, any>;
+    const today = new Date().toISOString().slice(0, 10);
+    const tavilyCount = usage.tavily?.day === today ? usage.tavily.count ?? 0 : 0;
+    const xDayCount = usage.x?.day === today ? usage.x.count ?? 0 : 0;
+    const tavilyLimit = prefs.tavilyDailyLimit ?? DEFAULT_TAVILY_DAILY_MAX;
+    const xLimit = prefs.xHourlyLimit ?? DEFAULT_X_HOURLY_MAX;
+    return `Usage today - Tavily: ${tavilyCount}/${tavilyLimit}; X: ${xDayCount} (hourly cap ${xLimit}).`;
+}
+
 /**
  * Handles the /settings command
  */
 export async function handleSettingsCommand(ctx: BotContext) {
     const telegramId = ctx.from!.id;
     try {
+        const profile = await getUserProfile(telegramId);
         const keyboard = await buildSettingsKeyboard(telegramId);
+        const usageLine = buildUsageSummary(profile);
 
         // Always remind them of Voice context
         const voiceStatus = ctx.session.voiceEnabled ? "ON 🎙️" : "OFF 🔇";
 
         await ctx.reply(
             `⚙️ *Xclaw Settings*\n\n` +
-            `Use the buttons below to configure your preferences.\n\n` +
+            `Use the buttons below to configure your preferences.\n${usageLine}\n\n` +
             `_Note: Voice Replies are currently ${voiceStatus}. Toggle via /voice_\n`,
             {
                 parse_mode: "Markdown",
@@ -88,6 +120,40 @@ export async function handleSettingsCommand(ctx: BotContext) {
  */
 export async function handleSettingsCallback(ctx: BotContext, data: string) {
     const telegramId = ctx.from!.id;
+
+    async function togglePref(key: string, label: string) {
+        const profile = await getUserProfile(telegramId);
+        const newPrefs = { ...(profile.prefs || {}) } as Record<string, any>;
+        const currentlyOn = (newPrefs as any)[key] !== false;
+        (newPrefs as any)[key] = !currentlyOn;
+        await updateUserProfile(telegramId, { prefs: newPrefs });
+        await ctx.answerCallbackQuery({ text: `${label} ${!currentlyOn ? "enabled" : "disabled"}.` }).catch(() => { });
+        const newKeyboard = await buildSettingsKeyboard(telegramId);
+        await ctx.editMessageReplyMarkup({ reply_markup: newKeyboard }).catch(() => { });
+    }
+
+    async function cycleSentinel() {
+        const profile = await getUserProfile(telegramId);
+        const newPrefs = { ...(profile.prefs || {}) } as Record<string, any>;
+        const steps = [30, 60, 120, 0];
+        const currentInterval = Number(newPrefs.sentinelIntervalMins) || 30;
+        const current = newPrefs.sentinelEnabled === false ? 0 : currentInterval;
+        const idx = steps.findIndex((v) => v === current);
+        const nextIdx = idx >= 0 ? (idx + 1) % steps.length : 1;
+        const next = steps[nextIdx];
+
+        if (next === 0) {
+            newPrefs.sentinelEnabled = false;
+        } else {
+            newPrefs.sentinelEnabled = true;
+            newPrefs.sentinelIntervalMins = next;
+        }
+
+        await updateUserProfile(telegramId, { prefs: newPrefs });
+        await ctx.answerCallbackQuery({ text: next === 0 ? "Sentinel disabled" : `Sentinel every ${next}m` }).catch(() => { });
+        const newKeyboard = await buildSettingsKeyboard(telegramId);
+        await ctx.editMessageReplyMarkup({ reply_markup: newKeyboard }).catch(() => { });
+    }
 
     if (data === "settings:noop") {
         await ctx.answerCallbackQuery({ text: "" }).catch(() => { });
@@ -296,6 +362,36 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
         ctx.session.awaitingSettingInput = "news_topics";
         await ctx.answerCallbackQuery();
         await ctx.reply("📰 Enter topics or feeds (comma-separated) for your curated news. Example: `AI agents, indie hacking, Phoenix tech`\nSend `clear` to remove.", { parse_mode: "Markdown" });
+        return;
+    }
+
+    if (data === "settings:toggle_news") {
+        await togglePref("newsEnabled", "News");
+        return;
+    }
+
+    if (data === "settings:toggle_habits") {
+        await togglePref("habitsEnabled", "Habits nudger");
+        return;
+    }
+
+    if (data === "settings:toggle_vibe") {
+        await togglePref("vibeEnabled", "Vibe check");
+        return;
+    }
+
+    if (data === "settings:toggle_deals") {
+        await togglePref("dealsEnabled", "Deals & price alerts");
+        return;
+    }
+
+    if (data === "settings:toggle_network") {
+        await togglePref("networkEnabled", "Network booster");
+        return;
+    }
+
+    if (data === "settings:toggle_sentinel") {
+        await cycleSentinel();
         return;
     }
 

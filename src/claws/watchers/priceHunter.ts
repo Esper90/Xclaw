@@ -48,6 +48,7 @@ export function startPriceHunterWatcher(
                 const telegramId = user.telegram_id;
                 const profile = await getUserProfile(telegramId);
                 const prefs = (profile.prefs || {}) as Record<string, any>;
+                if (prefs.dealsEnabled === false) continue;
                 if (isQuiet(prefs)) continue;
                 const wishlist = profile.wishlist ?? [];
                 if (!wishlist.length) continue;

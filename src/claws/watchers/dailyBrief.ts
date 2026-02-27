@@ -227,6 +227,7 @@ export function startDailyBriefWatcher(
                 const profile = await getUserProfile(telegramId);
                 const prefs = (profile.prefs || {}) as Record<string, any>;
                 if (isQuiet(prefs)) continue;
+                const newsEnabled = prefs.newsEnabled !== false;
 
                 if (sentRecently(profile.briefLastSentAt)) continue;
                 if (!isWithinBriefWindow(profile.timezone)) continue;
@@ -236,10 +237,12 @@ export function startDailyBriefWatcher(
                 const newPrefs = { ...prefs } as Record<string, any>;
                 let prefsChanged = false;
                 const sections: BriefSections = {
-                    headlines: await buildHeadlinesSection(telegramId, prefs, (digest) => {
-                        newPrefs.newsDigest = digest;
-                        prefsChanged = true;
-                    }),
+                    headlines: newsEnabled
+                        ? await buildHeadlinesSection(telegramId, prefs, (digest) => {
+                            newPrefs.newsDigest = digest;
+                            prefsChanged = true;
+                        })
+                        : "Headlines: disabled in settings.",
                     mentions: await buildMentionsSection(telegramId, hasX),
                     calendar: await buildCalendarSection(telegramId, profile.timezone),
                     weather: await buildWeatherSection(profile.timezone, profile.prefs),

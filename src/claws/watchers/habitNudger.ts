@@ -28,6 +28,7 @@ export function startHabitNudgerWatcher(
                 const telegramId = user.telegram_id;
                 const profile = await getUserProfile(telegramId);
                 const prefs = (profile.prefs || {}) as Record<string, any>;
+                if (prefs.habitsEnabled === false) continue;
                 if (isQuiet(prefs)) continue;
 
                 const habits = Array.isArray(prefs.habits) ? prefs.habits : [];
