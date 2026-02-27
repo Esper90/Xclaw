@@ -33,21 +33,25 @@ async function buildSettingsKeyboard(telegramId: number) {
     const newsLabel = newsTopics.length > 0 ? `${newsTopics.slice(0, 3).join(", ")}${newsTopics.length > 3 ? "…" : ""}` : "Not Set";
 
     const keyboard = new InlineKeyboard()
+        .text("🧭 Essentials", "settings:noop").row()
         .text(`🧠 AI Provider: ${aiDisplay}`, "settings:toggle_ai").row()
         .text(`🌍 Timezone: ${user.timezone || "Not Set"}`, "settings:set_timezone").row()
-        .text(`💓 Proactive Heartbeat: ${heartbeatStatus ? "ON" : "OFF"}`, "settings:toggle_heartbeat").row()
+        .text(`🔍 Tavily / day: ${tavilyLimit ?? "12 default"}`, "settings:set_tavily_limit").row()
+        .text(`⏳ News Cadence: ${newsCadenceHours ? `${newsCadenceHours}h` : "3h default"}`, "settings:set_news_cadence").row()
+        .text(`📰 News Topics: ${newsLabel}`, "settings:set_news_topics").row()
+        .text(`☀️ Weather: ${weatherLoc ? weatherLoc : "Not Set"}`, "settings:set_weather").row()
+        .text("📣 Signals & Safety", "settings:noop").row()
+        .text(`⭐ VIP List: ${vipLabel}`, "settings:set_vips").row()
         .text(`📭 DM Allowlist: ${user.dm_allowlist ? "Custom" : "All/Default"}`, "settings:set_dm_allowlist").row()
         .text(`📣 Mention Allowlist: ${user.mention_allowlist ? "Custom" : "All/Default"}`, "settings:set_mention_allowlist").row()
-        .text(`☀️ Weather: ${weatherLoc ? weatherLoc : "Not Set"}`, "settings:set_weather").row()
-        .text(`⭐ VIP List: ${vipLabel}`, "settings:set_vips").row()
+        .text(`💓 Proactive Heartbeat: ${heartbeatStatus ? "ON" : "OFF"}`, "settings:toggle_heartbeat").row()
         .text(`🧘 Vibe Cadence: ${vibeLabel}`, "settings:set_vibe_freq").row()
-        .text(`🛍️ Wishlist: ${wishlistLabel}`, "settings:set_wishlist").row()
-        .text(`🛠️ GitHub Repos: ${reposLabel}`, "settings:set_repos").row()
+        .text("🧵 Content & Work", "settings:noop").row()
         .text(`🧠 Content Mode: ${contentMode ? "ON" : "OFF"}`, "settings:toggle_content_mode").row()
         .text(`💡 Content Niche: ${contentNiche ? contentNiche : "Not Set"}`, "settings:set_content_niche").row()
-        .text(`📰 News Topics: ${newsLabel}`, "settings:set_news_topics").row()
-        .text(`⏳ News Cadence: ${newsCadenceHours ? `${newsCadenceHours}h` : "3h default"}`, "settings:set_news_cadence").row()
-        .text(`🔍 Tavily / day: ${tavilyLimit ?? "12 default"}`, "settings:set_tavily_limit").row();
+        .text(`🛍️ Wishlist: ${wishlistLabel}`, "settings:set_wishlist").row()
+        .text(`🛠️ GitHub Repos: ${reposLabel}`, "settings:set_repos").row()
+        .text("ℹ️ Settings Guide", "settings:help").row();
 
     return keyboard;
 }
@@ -82,6 +86,34 @@ export async function handleSettingsCommand(ctx: BotContext) {
  */
 export async function handleSettingsCallback(ctx: BotContext, data: string) {
     const telegramId = ctx.from!.id;
+
+    if (data === "settings:noop") {
+        await ctx.answerCallbackQuery({ text: "" }).catch(() => { });
+        return;
+    }
+
+    if (data === "settings:help") {
+        await ctx.answerCallbackQuery().catch(() => { });
+        const cheatSheet =
+            "*Settings Guide*\n" +
+            "🧭 Essentials\n" +
+            "• Timezone: Needed for correct cron times.\n" +
+            "• Tavily / day: Max live web searches I’ll run for you. Lower = safer quota, higher = fresher results.\n" +
+            "• News Cadence: How often I fetch curated news. 0 disables proactive news; you can still /news on-demand.\n" +
+            "• News Topics: Feeds I track for you.\n" +
+            "• Weather: Location for briefs and vibes.\n\n" +
+            "📣 Signals & Safety\n" +
+            "• VIP List: X handles I watch closely.\n" +
+            "• DM/Mention Allowlist: Limit alerts to these handles.\n" +
+            "• Heartbeat: Keep-alive pings for proactive features.\n" +
+            "• Vibe Cadence: How often to check in on you.\n\n" +
+            "🧵 Content & Work\n" +
+            "• Content Mode/Niche: Tailors drafts and ideas.\n" +
+            "• Wishlist: Items for deal alerts.\n" +
+            "• GitHub Repos: Projects to watch.";
+        await ctx.reply(cheatSheet, { parse_mode: "Markdown" });
+        return;
+    }
 
     if (data === "settings:toggle_heartbeat") {
         // Toggle heartbeat script execution logic
