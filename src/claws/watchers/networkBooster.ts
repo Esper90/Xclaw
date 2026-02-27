@@ -5,6 +5,17 @@ import { getUserProfile } from "../../db/profileStore";
 
 const CHECK_CRON = "0 13 * * MON"; // Mondays 13:00 UTC
 
+function isQuiet(prefs: Record<string, any>): boolean {
+    if ((prefs as any).quietAll) return true;
+    const start = Number(prefs.quietHoursStart);
+    const end = Number(prefs.quietHoursEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (start === end) return false;
+    const hour = new Date().getHours();
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end;
+}
+
 export function startNetworkBoosterWatcher(
     sendMessage: (chatId: number, text: string, extra?: { reply_markup?: any }) => Promise<void>
 ): void {
@@ -19,7 +30,9 @@ export function startNetworkBoosterWatcher(
                 if (!hasCreds) continue;
 
                 const profile = await getUserProfile(telegramId);
-                const niche = (profile.prefs as any)?.contentNiche as string | undefined;
+                const prefs = (profile.prefs || {}) as Record<string, any>;
+                if (isQuiet(prefs)) continue;
+                const niche = (prefs as any)?.contentNiche as string | undefined;
 
                 const message = [
                     "🤝 Network Booster (preview)",

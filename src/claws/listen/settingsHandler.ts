@@ -41,6 +41,7 @@ async function buildSettingsKeyboard(telegramId: number) {
         .text(`📰 News Topics: ${newsLabel}`, "settings:set_news_topics").text("❓", "help:news_topics").row()
         .text(`☀️ Weather: ${weatherLoc ? weatherLoc : "Not Set"}`, "settings:set_weather").text("❓", "help:weather").row()
         .text(`🌙 Quiet Hours`, "settings:set_quiet_hours").text("❓", "help:quiet_hours").row()
+        .text(`🔇 Master Quiet: ${(profile.prefs as any)?.quietAll ? "ON" : "OFF"}`, "settings:toggle_quiet_master").text("❓", "help:quiet_master").row()
         .text("📣 Signals & Safety", "settings:noop").row()
         .text(`⭐ VIP List: ${vipLabel}`, "settings:set_vips").text("❓", "help:vips").row()
         .text(`📭 DM Allowlist: ${user.dm_allowlist ? "Custom" : "All/Default"}`, "settings:set_dm_allowlist").text("❓", "help:dm_allow").row()
@@ -108,6 +109,7 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
             dm_allow: "Restrict DM alerts to these handles. Clear to allow all.",
             mention_allow: "Restrict mention alerts to these handles. Clear to allow all.",
             heartbeat: "Keeps proactive features alive. Turn off to pause automation.",
+            quiet_master: "Mutes all proactive pings. On-demand commands still respond.",
             vibe: "How often I check in on you.",
             content_mode: "When ON, I draft content and ideas proactively.",
             content_niche: "Focus area for content drafting and ideas.",
@@ -131,7 +133,8 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
             "• News Cadence: How often I fetch curated news. 0 disables proactive news; you can still /news on-demand.\n" +
             "• News Topics: Feeds I track for you.\n" +
             "• Weather: Location for briefs and vibes.\n" +
-            "• Quiet Hours: Mute proactive pings between two hours. On-demand commands still respond.\n\n" +
+            "• Quiet Hours: Mute proactive pings between two hours. On-demand commands still respond.\n" +
+            "• Master Quiet: Mute all proactive pings until you toggle it off.\n\n" +
             "📣 Signals & Safety\n" +
             "• VIP List: X handles I watch closely.\n" +
             "• DM/Mention Allowlist: Limit alerts to these handles.\n" +
@@ -225,6 +228,18 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
         ctx.session.awaitingSettingInput = "news_cadence";
         await ctx.answerCallbackQuery();
         await ctx.reply("⏳ How often should I fetch curated news? Enter hours as a number (e.g., `3`). Send `0` to disable proactive news.", { parse_mode: "Markdown" });
+        return;
+    }
+
+    if (data === "settings:toggle_quiet_master") {
+        const profile = await getUserProfile(telegramId);
+        const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+        const next = !(newPrefs as any).quietAll;
+        (newPrefs as any).quietAll = next;
+        await updateUserProfile(telegramId, { prefs: newPrefs });
+        await ctx.answerCallbackQuery({ text: `Master quiet ${next ? "enabled" : "disabled"}.` }).catch(() => { });
+        const newKeyboard = await buildSettingsKeyboard(telegramId);
+        await ctx.editMessageReplyMarkup({ reply_markup: newKeyboard }).catch(() => { });
         return;
     }
 

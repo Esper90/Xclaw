@@ -4,6 +4,17 @@ import { getUserProfile } from "../../db/profileStore";
 
 const CHECK_CRON = "15 17 * * *"; // daily 17:15 UTC
 
+function isQuiet(prefs: Record<string, any>): boolean {
+    if ((prefs as any).quietAll) return true;
+    const start = Number(prefs.quietHoursStart);
+    const end = Number(prefs.quietHoursEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (start === end) return false;
+    const hour = new Date().getHours();
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end;
+}
+
 export function startHabitNudgerWatcher(
     sendMessage: (chatId: number, text: string, extra?: { reply_markup?: any }) => Promise<void>
 ): void {
@@ -15,10 +26,13 @@ export function startHabitNudgerWatcher(
             for (const user of users) {
                 const telegramId = user.telegram_id;
                 const profile = await getUserProfile(telegramId);
-                const habits = Array.isArray((profile.prefs as any)?.habits) ? (profile.prefs as any).habits : [];
+                const prefs = (profile.prefs || {}) as Record<string, any>;
+                if (isQuiet(prefs)) continue;
+
+                const habits = Array.isArray(prefs.habits) ? prefs.habits : [];
                 if (!habits.length) continue;
 
-                const log = (profile.prefs as any)?.habitLog || {};
+                const log = (prefs as any)?.habitLog || {};
                 const today = new Date().toISOString().slice(0, 10);
 
                 const lines = habits.slice(0, 4).map((h: any, idx: number) => {
