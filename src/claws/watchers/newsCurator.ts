@@ -3,9 +3,9 @@ import { listAllUsers } from "../../db/userStore";
 import { getUserProfile, updateUserProfile } from "../../db/profileStore";
 import { checkAndConsumeTavilyBudget } from "../sense/apiBudget";
 import { fetchCuratedNewsDigest } from "../sense/newsDigest";
-import { getLocalDayKey, getLocalHour } from "../sense/time";
+import { getLocalDayKey, getLocalHour, getLocalTimeKey } from "../sense/time";
 
-const CHECK_CRON = "0 */1 * * *"; // global poll; per-user cadence enforced via prefs
+const CHECK_CRON = "* * * * *"; // poll each minute; per-user schedule/cadence enforced via prefs
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 type SavedDigest = {
@@ -13,6 +13,13 @@ type SavedDigest = {
     ts?: number;
     dayKey?: string;
 };
+
+function normalizeNewsScheduleTimes(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map((t) => (typeof t === "string" ? t.trim() : ""))
+        .filter((t) => /^([01]\d|2[0-3]):[0-5]\d$/.test(t));
+}
 
 function isQuiet(prefs: Record<string, any>, timezone: string | null | undefined): boolean {
     if ((prefs as any).quietAll) return true;
@@ -56,14 +63,25 @@ export function startNewsCuratorWatcher(
                     : [];
                 if (!topics.length) continue;
 
-                const intervalHours = Number.isFinite(prefs.newsFetchIntervalHours)
-                    ? Math.max(0, Math.min(48, Number(prefs.newsFetchIntervalHours)))
-                    : 3;
-                const lastTs = (prefs.newsDigest as any)?.ts as number | undefined;
-                const sinceLast = lastTs ? Date.now() - lastTs : Infinity;
-                if (intervalHours === 0) continue;
-                if (sinceLast < intervalHours * 60 * 60 * 1000) continue;
                 if (isQuiet(prefs, profile.timezone)) continue;
+
+                const scheduleTimes = normalizeNewsScheduleTimes(prefs.newsScheduleTimes);
+                const localDayKey = getLocalDayKey(profile.timezone);
+                const localTimeKey = getLocalTimeKey(profile.timezone);
+                const slotKey = `${localDayKey}@${localTimeKey}`;
+
+                if (scheduleTimes.length > 0) {
+                    if (!scheduleTimes.includes(localTimeKey)) continue;
+                    if (prefs.newsLastSentSlot === slotKey) continue;
+                } else {
+                    const intervalHours = Number.isFinite(prefs.newsFetchIntervalHours)
+                        ? Math.max(0, Math.min(48, Number(prefs.newsFetchIntervalHours)))
+                        : 3;
+                    const lastTs = (prefs.newsDigest as any)?.ts as number | undefined;
+                    const sinceLast = lastTs ? Date.now() - lastTs : Infinity;
+                    if (intervalHours === 0) continue;
+                    if (sinceLast < intervalHours * 60 * 60 * 1000) continue;
+                }
 
                 const oldDigest = (prefs.newsDigest as SavedDigest | undefined);
                 let bullets: string[] = [];
@@ -93,18 +111,13 @@ export function startNewsCuratorWatcher(
                     note = note || "(no fresh headlines yet)";
                 }
 
-                try {
-                    const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
-                    (newPrefs as any).newsDigest = {
-                        topics,
-                        bullets,
-                        ts: Date.now(),
-                        dayKey: getLocalDayKey(profile.timezone),
-                    };
-                    await updateUserProfile(telegramId, { prefs: newPrefs });
-                } catch (err) {
-                    console.warn(`[news-curator] Failed to cache digest for ${telegramId}:`, err);
-                }
+                const nextPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+                (nextPrefs as any).newsDigest = {
+                    topics,
+                    bullets,
+                    ts: Date.now(),
+                    dayKey: localDayKey,
+                };
 
                 const message = [
                     "News: Curated Digest",
@@ -124,6 +137,10 @@ export function startNewsCuratorWatcher(
 
                 try {
                     await sendMessage(telegramId, message, { reply_markup });
+                    if (scheduleTimes.length > 0) {
+                        (nextPrefs as any).newsLastSentSlot = slotKey;
+                    }
+                    await updateUserProfile(telegramId, { prefs: nextPrefs });
                     console.log(`[news-curator] Sent news to ${telegramId} (topics=${topics.length})`);
                 } catch (err) {
                     console.error(`[news-curator] Failed to send to ${telegramId}:`, err);

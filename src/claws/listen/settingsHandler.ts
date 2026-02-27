@@ -6,6 +6,44 @@ import { getUserProfile, updateUserProfile } from "../../db/profileStore";
 import { DEFAULT_TAVILY_DAILY_MAX, DEFAULT_X_HOURLY_MAX } from "../sense/apiBudget";
 import { getLocalDayKey, normalizeTimeZoneOrNull } from "../sense/time";
 
+function normalizeNewsScheduleTimes(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+        .map((t) => (typeof t === "string" ? t.trim() : ""))
+        .filter((t) => /^([01]\d|2[0-3]):[0-5]\d$/.test(t));
+}
+
+function parseNewsTimeToken(token: string): string | null {
+    const lower = token.trim().toLowerCase();
+    if (!lower) return null;
+
+    const m24 = lower.match(/^([01]?\d|2[0-3])(?::([0-5]\d))?$/);
+    if (m24) {
+        const hour = Number(m24[1]);
+        const min = Number(m24[2] ?? "0");
+        return `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    }
+
+    const m12 = lower.match(/^([1-9]|1[0-2])(?::([0-5]\d))?\s*(am|pm)$/);
+    if (m12) {
+        let hour = Number(m12[1]) % 12;
+        const min = Number(m12[2] ?? "0");
+        if (m12[3] === "pm") hour += 12;
+        return `${String(hour).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+    }
+
+    return null;
+}
+
+function parseNewsScheduleInput(raw: string): string[] {
+    const slots = raw
+        .split(",")
+        .map((token) => parseNewsTimeToken(token))
+        .filter((v): v is string => Boolean(v));
+
+    return Array.from(new Set(slots)).sort();
+}
+
 /**
  * Builds the inline keyboard for the Settings menu
  */
@@ -26,6 +64,7 @@ async function buildSettingsKeyboard(telegramId: number) {
     const contentMode = Boolean((profile.prefs as any)?.contentMode);
     const contentNiche = (profile.prefs as any)?.contentNiche as string | undefined;
     const newsTopics = Array.isArray((profile.prefs as any)?.newsTopics) ? (profile.prefs as any).newsTopics as string[] : [];
+    const newsTimes = normalizeNewsScheduleTimes((profile.prefs as any)?.newsScheduleTimes);
     const tavilyLimit = (profile.prefs as any)?.tavilyDailyLimit ?? undefined;
     const newsCadenceHours = (profile.prefs as any)?.newsFetchIntervalHours ?? undefined;
     const newsEnabled = (profile.prefs as any)?.newsEnabled !== false;
@@ -44,6 +83,9 @@ async function buildSettingsKeyboard(telegramId: number) {
     const vibeLabel = profile.vibeCheckFreqDays ? `${profile.vibeCheckFreqDays}d` : "3d";
     const wishlistLabel = profile.wishlist && profile.wishlist.length > 0 ? `${profile.wishlist.length} items` : "Empty";
     const reposLabel = profile.watchedRepos && profile.watchedRepos.length > 0 ? `${profile.watchedRepos.length} repos` : "None";
+    const newsTimesLabel = newsTimes.length > 0
+        ? `${newsTimes.slice(0, 3).join(", ")}${newsTimes.length > 3 ? ", ..." : ""}`
+        : "Not Set";
     const newsLabel = newsTopics.length > 0 ? `${newsTopics.slice(0, 3).join(", ")}${newsTopics.length > 3 ? "…" : ""}` : "Not Set";
 
     const keyboard = new InlineKeyboard()
@@ -52,6 +94,7 @@ async function buildSettingsKeyboard(telegramId: number) {
         .text(`🌍 Timezone: ${user.timezone || "Not Set"}`, "settings:set_timezone").text("❓", "help:timezone").row()
         .text(`🔍 Tavily / day: ${tavilyLimit ?? "12 default"}`, "settings:set_tavily_limit").text("❓", "help:tavily").row()
         .text(`⏳ News Cadence: ${newsCadenceHours ? `${newsCadenceHours}h` : "3h default"}`, "settings:set_news_cadence").text("❓", "help:news_cadence").row()
+        .text(`⏰ News Times: ${newsTimesLabel}`, "settings:set_news_times").text("❓", "help:news_times").row()
         .text(`📰 News Topics: ${newsLabel}`, "settings:set_news_topics").text("❓", "help:news_topics").row()
         .text(`☀️ Weather: ${weatherLoc ? weatherLoc : "Not Set"}`, "settings:set_weather").text("❓", "help:weather").row()
         .text(`🌙 Quiet Hours`, "settings:set_quiet_hours").text("❓", "help:quiet_hours").row()
@@ -170,6 +213,7 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
             timezone: "Needed so scheduled briefs and reminders fire at your local time.",
             tavily: "Daily cap for live web searches. Lower = conserve quota; higher = fresher answers.",
             news_cadence: "How often I fetch curated news. 0 disables proactive news; on-demand still works.",
+            news_times: "Exact local times for proactive news (e.g., 04:00, 05:00, 15:00). Overrides cadence when set.",
             news_topics: "Topics/feeds I track when curating news.",
             weather: "Location for weather in briefs and vibe checks.",
             quiet_hours: "Block proactive pings during a window (e.g., 22-7). On-demand commands still work.",
@@ -199,6 +243,7 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
             "• Timezone: Needed for correct cron times.\n" +
             "• Tavily / day: Max live web searches I’ll run for you. Lower = safer quota, higher = fresher results.\n" +
             "• News Cadence: How often I fetch curated news. 0 disables proactive news; you can still /news on-demand.\n" +
+            "• News Times: Exact local send times like 04:00, 05:00, 15:00. If set, these override cadence.\n" +
             "• News Topics: Feeds I track for you.\n" +
             "• Weather: Location for briefs and vibes.\n" +
             "• Quiet Hours: Mute proactive pings between two hours. On-demand commands still respond.\n" +
@@ -295,7 +340,17 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
     if (data === "settings:set_news_cadence") {
         ctx.session.awaitingSettingInput = "news_cadence";
         await ctx.answerCallbackQuery();
-        await ctx.reply("⏳ How often should I fetch curated news? Enter hours as a number (e.g., `3`). Send `0` to disable proactive news.", { parse_mode: "Markdown" });
+        await ctx.reply("⏳ How often should I fetch curated news? Enter hours as a number (e.g., `3`). Send `0` to disable proactive news. (Ignored if News Times are set.)", { parse_mode: "Markdown" });
+        return;
+    }
+
+    if (data === "settings:set_news_times") {
+        ctx.session.awaitingSettingInput = "news_times";
+        await ctx.answerCallbackQuery();
+        await ctx.reply(
+            "⏰ Enter local news send times, comma-separated.\nExamples: `4am, 5am, 3pm` or `04:00, 05:00, 15:00`\nSend `clear` to remove scheduled times (cadence mode will be used).",
+            { parse_mode: "Markdown" }
+        );
         return;
     }
 
@@ -501,6 +556,25 @@ export async function handleSettingTextInput(ctx: BotContext, text: string): Pro
             }
             await updateUserProfile(telegramId, { prefs: newPrefs });
             await ctx.reply(`✅ News topics ${trimmed.toLowerCase() === "clear" ? "cleared" : "updated"}.`, { parse_mode: "Markdown" });
+        }
+        else if (settingType === "news_times") {
+            const trimmed = text.trim();
+            const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+            if (trimmed.toLowerCase() === "clear" || trimmed.toLowerCase() === "off" || trimmed.toLowerCase() === "none") {
+                delete (newPrefs as any).newsScheduleTimes;
+                delete (newPrefs as any).newsLastSentSlot;
+                await updateUserProfile(telegramId, { prefs: newPrefs });
+                await ctx.reply("✅ News schedule times cleared. Cadence mode is now active.", { parse_mode: "Markdown" });
+            } else {
+                const slots = parseNewsScheduleInput(trimmed);
+                if (!slots.length) {
+                    throw new Error("No valid time found. Use formats like 4am, 5am, 3pm or 04:00, 15:00.");
+                }
+                (newPrefs as any).newsScheduleTimes = slots;
+                delete (newPrefs as any).newsLastSentSlot;
+                await updateUserProfile(telegramId, { prefs: newPrefs });
+                await ctx.reply(`✅ News schedule set to: ${slots.join(", ")} (local time).`, { parse_mode: "Markdown" });
+            }
         }
         else if (settingType === "news_cadence") {
             const num = parseInt(text.trim(), 10);

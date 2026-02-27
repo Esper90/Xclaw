@@ -70,6 +70,7 @@ export interface SessionData {
         | "repos"
         | "content_niche"
         | "news_topics"
+        | "news_times"
         | "news_cadence"
         | "quiet_hours"
         | "tavily_limit";

@@ -67,6 +67,24 @@ export function getLocalHour(timezone: string | null | undefined, at: number | D
     return Number.isFinite(hour) ? hour : 0;
 }
 
+export function getLocalTimeKey(
+    timezone: string | null | undefined,
+    at: number | Date = Date.now()
+): string {
+    const tz = resolveTimeZone(timezone);
+    const date = at instanceof Date ? at : new Date(at);
+    const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+    }).formatToParts(date);
+
+    const hour = parts.find((p) => p.type === "hour")?.value ?? "00";
+    const minute = parts.find((p) => p.type === "minute")?.value ?? "00";
+    return `${hour}:${minute}`;
+}
+
 export function formatNowForUser(timezone: string | null | undefined): string {
     const tz = resolveTimeZone(timezone);
     const formatter = new Intl.DateTimeFormat("en-US", {
