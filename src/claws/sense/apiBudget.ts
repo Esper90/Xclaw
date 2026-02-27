@@ -25,6 +25,19 @@ function resolveCeiling(raw: unknown, fallback: number, min = 1, max = 100): num
     return clamped;
 }
 
+function setUsageCounters(
+    prefs: Record<string, unknown>,
+    key: "tavily" | "x",
+    count: number
+): Record<string, unknown> {
+    const next = { ...prefs } as Record<string, any>;
+    const dayKey = new Date().toISOString().slice(0, 10);
+    const usage = (next.usage ?? {}) as Record<string, any>;
+    usage[key] = { day: dayKey, count };
+    next.usage = usage;
+    return next;
+}
+
 /**
  * Check + consume Tavily budget (daily). Resets window when stale.
  */
@@ -44,9 +57,12 @@ export async function checkAndConsumeTavilyBudget(telegramId: number): Promise<B
         return { allowed: false, reason: `Daily Tavily limit reached (${ceiling})` };
     }
 
+    const nextPrefs = setUsageCounters(prefs, "tavily", calls + 1);
+
     await updateUserProfile(telegramId, {
         tavilyCallsToday: calls + 1,
         tavilyCallsResetAt: resetAt,
+        prefs: nextPrefs,
     });
     return { allowed: true };
 }
@@ -60,6 +76,10 @@ export async function checkAndConsumeXBudget(telegramId: number): Promise<Budget
     const ceiling = resolveCeiling(prefs.xHourlyLimit, DEFAULT_X_HOURLY_MAX);
     let calls = profile.xCallsHour ?? 0;
     let resetAt = profile.xCallsResetAt;
+    let dayCalls = (prefs as any)?.usage?.x?.count as number | undefined;
+    const dayKey = new Date().toISOString().slice(0, 10);
+    const lastDay = (prefs as any)?.usage?.x?.day as string | undefined;
+    if (!Number.isFinite(dayCalls) || lastDay !== dayKey) dayCalls = 0;
 
     if (needsReset(resetAt, HOUR_MS)) {
         calls = 0;
@@ -70,9 +90,12 @@ export async function checkAndConsumeXBudget(telegramId: number): Promise<Budget
         return { allowed: false, reason: `Hourly X API limit reached (${ceiling})` };
     }
 
+    const nextPrefs = setUsageCounters(prefs, "x", (dayCalls ?? 0) + 1);
+
     await updateUserProfile(telegramId, {
         xCallsHour: calls + 1,
         xCallsResetAt: resetAt,
+        prefs: nextPrefs,
     });
     return { allowed: true };
 }
