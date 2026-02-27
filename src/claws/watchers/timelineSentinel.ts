@@ -7,6 +7,7 @@ import { checkAndConsumeXBudget } from "../sense/apiBudget";
 const CHECK_CRON = "*/30 * * * *"; // every 30 minutes
 const MAX_HANDLES_PER_RUN = 3; // avoid blowing budget if vip_list is long
 const TWEETS_PER_HANDLE = 3;
+const COOLDOWN_NO_ACTIVITY_MINUTES = 60; // widen interval when nothing new
 
 function isQuiet(prefs: Record<string, any>): boolean {
     if ((prefs as any).quietAll) return true;
@@ -79,6 +80,13 @@ function renderDigest(items: VipDigestItem[]): string {
         .join("\n");
 }
 
+function shouldSkipForCooldown(lastRunTs?: number, seenActivity?: boolean): boolean {
+    if (seenActivity) return false;
+    if (!lastRunTs) return false;
+    const since = Date.now() - lastRunTs;
+    return since < COOLDOWN_NO_ACTIVITY_MINUTES * 60 * 1000;
+}
+
 export function startTimelineSentinelWatcher(
     sendMessage: (chatId: number, text: string, extra?: { reply_markup?: any }) => Promise<void>
 ): void {
@@ -102,8 +110,14 @@ export function startTimelineSentinelWatcher(
                 }
 
                 const lastSeen = profile.lastTweetIds ?? {};
+                const lastRun = (profile.prefs as any)?.sentinelLastRun as number | undefined;
                 const newLastSeen: Record<string, string> = { ...lastSeen };
                 const digestItems: VipDigestItem[] = [];
+
+                // If we saw nothing last run, back off to 60m before trying again
+                if (shouldSkipForCooldown(lastRun, false)) {
+                    continue;
+                }
 
                 for (const handle of vipList.slice(0, MAX_HANDLES_PER_RUN)) {
                     const budget = await checkAndConsumeXBudget(telegramId);
@@ -127,8 +141,11 @@ export function startTimelineSentinelWatcher(
                     }
                 }
 
+                const prefsPatch: Record<string, any> = { sentinelLastRun: Date.now() };
+
                 if (digestItems.length === 0) {
                     console.log(`[timeline-sentinel] No new VIP tweets for ${telegramId}`);
+                    await updateUserProfile(telegramId, { prefs: { ...(profile.prefs || {}), ...prefsPatch } });
                     continue;
                 }
 
