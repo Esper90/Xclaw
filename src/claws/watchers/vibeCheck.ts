@@ -7,6 +7,17 @@ const CHECK_CRON = "0 * * * *"; // top of every hour
 const DEFAULT_FREQ_DAYS = 3;
 const QUIET_HOURS = { start: 7, end: 22 }; // local hours (inclusive start, exclusive end)
 
+function isQuiet(prefs: Record<string, any>): boolean {
+    if ((prefs as any).quietAll) return true;
+    const start = Number(prefs.quietHoursStart);
+    const end = Number(prefs.quietHoursEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (start === end) return false;
+    const hour = new Date().getHours();
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end;
+}
+
 function withinQuietWindow(timezone: string | null | undefined): boolean {
     const tz = timezone || "UTC";
     const now = new Date();
@@ -38,6 +49,7 @@ export function startVibeCheckWatcher(
                 const profile = await getUserProfile(telegramId);
                 const freqDays = profile.vibeCheckFreqDays ?? DEFAULT_FREQ_DAYS;
                 const prefs = (profile.prefs ?? {}) as Record<string, any>;
+                if (isQuiet(prefs)) continue;
                 const lastSent = prefs.vibeLastSentAt as string | undefined;
 
                 if (!withinQuietWindow(profile.timezone)) continue;

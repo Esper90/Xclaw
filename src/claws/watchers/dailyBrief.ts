@@ -10,6 +10,7 @@ import { getUpcomingReminders } from "../../db/reminders";
 const CHECK_CRON = "*/5 * * * *"; // check every 5 minutes
 const BRIEF_WINDOW_MINUTES = 10; // fire within 10 minutes after 07:30 local
 const MIN_HOURS_BETWEEN_BRIEFS = 23; // guard against double-sends
+const NEWS_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000; // reuse news within 6h
 
 type BriefSections = {
     headlines: string;
@@ -66,23 +67,43 @@ function formatWithTz(iso: string, timezone: string | null | undefined): string 
     return formatter.format(new Date(iso));
 }
 
-async function buildHeadlinesSection(telegramId: number): Promise<string> {
+async function buildHeadlinesSection(
+    telegramId: number,
+    prefs: Record<string, unknown>,
+    setDigest: (digest: { topics: string[]; bullets: string[]; ts: number }) => void
+): Promise<string> {
+    const existing = (prefs as any).newsDigest as { bullets?: string[]; ts?: number; topics?: string[] } | undefined;
+    const topics = Array.isArray((prefs as any).newsTopics) ? (prefs as any).newsTopics as string[] : [];
+    const now = Date.now();
+    const fresh = existing?.bullets && existing.bullets.length > 0 && typeof existing.ts === "number" && now - existing.ts < NEWS_CACHE_MAX_AGE_MS;
+
+    if (fresh) {
+        return `Headlines (cached):\n${formatBulletList(existing!.bullets)}`;
+    }
+
     const budget = await checkAndConsumeTavilyBudget(telegramId);
-    if (!budget.allowed) return `Headlines: Tavily limit hit (${budget.reason}).`;
+    if (!budget.allowed) {
+        if (existing?.bullets?.length) {
+            return `Headlines (cached):\n${formatBulletList(existing.bullets)}\n_(live search skipped: ${budget.reason})_`;
+        }
+        return `Headlines: Tavily limit hit (${budget.reason}).`;
+    }
 
     try {
-        const raw = await performTavilySearch("today's top world and tech news headlines, 5 concise bullets", 5);
-        // Extract linked lines
+        const query = topics.length ? `top news for ${topics.join(", ")}, 5 concise bullets` : "today's top world and tech news headlines, 5 concise bullets";
+        const raw = await performTavilySearch(query, 5);
         const bullets = raw
             .split("\n")
             .filter((line) => line.includes("]("))
             .map((line) => line.trim())
             .slice(0, 5);
 
-        if (bullets.length === 0) return "Headlines: No relevant search results.";
+        if (!bullets.length) return "Headlines: No relevant search results.";
+        setDigest({ topics, bullets, ts: now });
         return `Headlines:\n${formatBulletList(bullets)}`;
     } catch (err: any) {
         console.warn(`[daily-brief] Tavily failed for ${telegramId}:`, err);
+        if (existing?.bullets?.length) return `Headlines (cached):\n${formatBulletList(existing.bullets)}\n_(live search failed: ${err?.message ?? "error"})_`;
         return `Headlines: search unavailable (${err?.message ?? "error"}).`;
     }
 }
@@ -179,6 +200,17 @@ function renderBrief(sections: BriefSections): string {
         .join("\n");
 }
 
+function isQuiet(prefs: Record<string, any>): boolean {
+    if ((prefs as any).quietAll) return true;
+    const start = Number(prefs.quietHoursStart);
+    const end = Number(prefs.quietHoursEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (start === end) return false;
+    const hour = new Date().getHours();
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end;
+}
+
 export function startDailyBriefWatcher(
     sendMessage: (chatId: number, text: string, extra?: { reply_markup?: any }) => Promise<void>
 ): void {
@@ -190,14 +222,21 @@ export function startDailyBriefWatcher(
             for (const user of users) {
                 const telegramId = user.telegram_id;
                 const profile = await getUserProfile(telegramId);
+                const prefs = (profile.prefs || {}) as Record<string, any>;
+                if (isQuiet(prefs)) continue;
 
                 if (sentRecently(profile.briefLastSentAt)) continue;
                 if (!isWithinBriefWindow(profile.timezone)) continue;
 
                 const hasX = await hasUserXCreds(telegramId);
                 const upcomingReminders = await getUpcomingReminders(telegramId, 3);
+                const newPrefs = { ...prefs } as Record<string, any>;
+                let prefsChanged = false;
                 const sections: BriefSections = {
-                    headlines: await buildHeadlinesSection(telegramId),
+                    headlines: await buildHeadlinesSection(telegramId, prefs, (digest) => {
+                        newPrefs.newsDigest = digest;
+                        prefsChanged = true;
+                    }),
                     mentions: await buildMentionsSection(telegramId, hasX),
                     calendar: await buildCalendarSection(telegramId, profile.timezone),
                     weather: await buildWeatherSection(profile.timezone, profile.prefs),
@@ -223,6 +262,7 @@ export function startDailyBriefWatcher(
                     await updateUserProfile(telegramId, {
                         briefLastSentAt: new Date().toISOString(),
                         briefCache: sections,
+                        ...(prefsChanged ? { prefs: newPrefs } : {}),
                     });
                     console.log(`[daily-brief] Sent brief to user ${telegramId} (hasX=${hasX})`);
                 } catch (err) {

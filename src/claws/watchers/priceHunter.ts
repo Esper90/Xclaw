@@ -8,6 +8,17 @@ import { extractDeals } from "./priceParser";
 const CHECK_CRON = "15 13 * * *"; // 13:15 UTC daily
 const MAX_ITEMS_PER_USER = 3;
 
+function isQuiet(prefs: Record<string, any>): boolean {
+    if ((prefs as any).quietAll) return true;
+    const start = Number(prefs.quietHoursStart);
+    const end = Number(prefs.quietHoursEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (start === end) return false;
+    const hour = new Date().getHours();
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end;
+}
+
 async function searchDeal(telegramId: number, item: string, targetPrice?: number): Promise<string> {
     const query = targetPrice
         ? `${item} best price today under $${targetPrice}`
@@ -36,6 +47,8 @@ export function startPriceHunterWatcher(
             for (const user of users) {
                 const telegramId = user.telegram_id;
                 const profile = await getUserProfile(telegramId);
+                const prefs = (profile.prefs || {}) as Record<string, any>;
+                if (isQuiet(prefs)) continue;
                 const wishlist = profile.wishlist ?? [];
                 if (!wishlist.length) continue;
 
