@@ -18,6 +18,10 @@ Use this snippet to brief the planner model on which autonomous tools to propose
 - Content Idea Generator (low-cost): Weekly/on-demand ideas from niche + memory + light search. Only when content mode is on. Use one Tavily call max.
 - Curated News (cheap): Topics/feeds in prefs; summarize top 3 with one Tavily fetch and Gemini; prefer cache.
 - Feedback Analyzer (X required): Weekly pulse on recent X posts/replies; suggest 2–3 next-post tweaks. Skip if no X creds.
+- Personalized Idea Generator (new, low-cost): On-demand ideas with niche + tone; reuse cached idea list; max one Tavily call/day. Prefer over generic brainstorming.
+- Custom News Curator (new, cheap): User-defined topics/feeds; cached hourly digest; propose this before generic web_search for news asks.
+- Network Booster (X required): Weekly/ondemand collab suggestions from followers/mentions; draft intro DMs. Skip if no X creds.
+- Habit Tracker & Nudger (no X): Daily check-in on saved habits; offer quick “mark done/+15m/snooze”. Lightweight, no external APIs.
 
 ## Output Style
 - Keep suggestions brief and action-oriented (one line per option with tool name and outcome).

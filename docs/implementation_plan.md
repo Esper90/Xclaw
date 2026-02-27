@@ -8,6 +8,10 @@
 5) Price & Deal Hunter
 6) GitHub Co-Pilot Watcher
 7) Thread Archaeologist
+8) Personalized Idea Generator (on-demand + weekly)
+9) Custom News Curator (on-demand + hourly cache)
+10) Network Booster (weekly preview)
+11) Habit Tracker & Nudger (daily)
 
 ## Foundations (apply before/while building features)
 - BYOK gate for all X actions: use the existing 4-key OAuth1 creds from `/setup` (stored in Supabase, resolved via `getUserXClient`). No bearer key required.
@@ -49,6 +53,24 @@
 ### 7) Thread Archaeologist
 - Trigger: forwarded tweet link or “explain this thread”. Requires X key; otherwise respond with requirement message.
 - Fetch full thread via X API; summarize with Gemini + key opinions; output threaded summary + “Reply with this” button. Cache summary (TTL ≈1h).
+
+### 8) Personalized Idea Generator (on-demand + weekly)
+- Use tool `personalized_idea_generator` (Gemini + Tavily ≤1/day) to draft 3–8 ideas with tone option; cache in prefs.contentIdeasCache.
+- Weekly cron opt-in (reuse ideaGenerator watcher cadence); gate by contentMode and BYOK for richer context when available.
+- Buttons: Draft thread | Save for later. Persist ideas to memory to avoid repeats.
+
+### 9) Custom News Curator (on-demand + hourly cache)
+- Tool `custom_news_curator` uses topics in prefs.newsTopics; Tavily ≤1/day; caches digest in prefs.newsDigest; fallback to cache when budget blocked.
+- Hourly watcher keeps cache warm for proactive delivery; on-demand calls reuse cache when within 1h to save quota.
+- Buttons: Refresh | Dismiss. Prefer this over generic web_search for news asks.
+
+### 10) Network Booster (weekly preview)
+- Requires X creds. Weekly cron previews collab suggestions; on-demand tool `network_booster` (stub) returns templated picks until graph fetch is wired.
+- Future: pull recent followers/mentions; dedupe via memory; draft intro DMs; buttons: Send DM | Follow.
+
+### 11) Habit Tracker & Nudger (daily)
+- Tool `habit_tracker` saves habits to prefs.habits (name, target/day, unit); action=log for quick progress.
+- Daily watcher `habitNudger` pings top habits with buttons: Mark done | +15m | Snooze. No external APIs yet; optional Google Fit later.
 
 ## Planner Prompt Update
 - Add all 7 tools with gating notes: only suggest X tools when user has provided key. Describe when to use each (brief, sentinel, vibe check, repurposer, deals, GH watcher, thread archaeologist).

@@ -12,7 +12,7 @@ import { TwitterApi } from "twitter-api-v2";
 import { upsertUser, deleteUser, getUser, getOrGeneratePineconeKey } from "../../db/userStore";
 import { deleteCachedProfile } from "../../db/xCacheStore";
 import { createReminder, deleteAllRemindersForUser } from "../../db/reminders";
-import { getUserProfile } from "../../db/profileStore";
+import { getUserProfile, updateUserProfile } from "../../db/profileStore";
 import { invalidateUserXClient } from "../../db/getUserClient";
 import { registerAndSubscribeWebhook } from "../../x/webhookManager";
 import { config } from "../../config";
@@ -24,6 +24,19 @@ import { recordInteraction } from "../archive/buffer";
 
 const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
 const SENTINEL_LABELS = DM_LABELS;
+
+type HabitPref = { name: string; targetPerDay?: number; unit?: string };
+
+function normalizeHabits(prefs: Record<string, unknown> | null | undefined): HabitPref[] {
+    const habits = Array.isArray((prefs as any)?.habits) ? (prefs as any).habits : [];
+    return habits
+        .map((h: any) => ({
+            name: String(h.name || "").trim(),
+            targetPerDay: Number(h.targetPerDay) || undefined,
+            unit: h.unit ? String(h.unit) : undefined,
+        }))
+        .filter((h) => h.name.length > 0);
+}
 
 /**
  * Register all bot message and command handlers on the bot instance.
@@ -128,6 +141,60 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `_Your data is never sold, shared, or used for advertising._`,
             { parse_mode: "Markdown" }
         );
+    });
+
+    bot.command("habit", async (ctx) => {
+        const args = ctx.match?.trim() || "";
+        const telegramId = ctx.from!.id;
+        const profile = await getUserProfile(telegramId);
+        const habits = normalizeHabits(profile.prefs);
+
+        if (!args) {
+            if (!habits.length) {
+                await ctx.reply("No habits set. Usage: /habit <name> <target?> <unit?> — e.g., /habit code 60 minutes");
+                return;
+            }
+            const log = (profile.prefs as any)?.habitLog || {};
+            const today = new Date().toISOString().slice(0, 10);
+            const lines = habits.map((h, i) => {
+                const key = h.name.toLowerCase();
+                const entry = log[key] && log[key].date === today ? log[key] : null;
+                const progress = entry ? ` — today: ${entry.total}${h.unit ? " " + h.unit : ""}` : "";
+                return `${i + 1}. ${h.name}${h.targetPerDay ? ` (${h.targetPerDay}${h.unit ? " " + h.unit : ""}/day)` : ""}${progress}`;
+            });
+            await ctx.reply(["Your habits:", "", ...lines].join("\n"));
+            return;
+        }
+
+        const parts = args.split(/\s+/);
+        const name = parts.shift() ?? "";
+        if (!name) {
+            await ctx.reply("Usage: /habit <name> <target?> <unit?> — e.g., /habit code 60 minutes");
+            return;
+        }
+        let targetPerDay: number | undefined;
+        let unit: string | undefined;
+        if (parts.length) {
+            const maybeNum = Number(parts[0]);
+            if (Number.isFinite(maybeNum)) {
+                targetPerDay = maybeNum;
+                parts.shift();
+                unit = parts.join(" ") || undefined;
+            } else {
+                unit = parts.join(" ") || undefined;
+            }
+        }
+
+        const updated: HabitPref = { name, targetPerDay, unit };
+        const nextHabits = [...habits];
+        const idx = nextHabits.findIndex((h) => h.name.toLowerCase() === name.toLowerCase());
+        if (idx >= 0) nextHabits[idx] = updated; else nextHabits.push(updated);
+
+        const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+        (newPrefs as any).habits = nextHabits;
+        await updateUserProfile(telegramId, { prefs: newPrefs });
+
+        await ctx.reply(`🧱 Habit saved: "${name}"${targetPerDay ? ` (${targetPerDay}${unit ? " " + unit : ""}/day)` : ""}.`);
     });
 
     bot.command("mentions", async (ctx) => {
@@ -1021,6 +1088,53 @@ ${buffer.join("\n")}`;
             } catch (err: any) {
                 console.error("[router] Undo tweet failed:", err);
                 await ctx.answerCallbackQuery({ text: `❌ Failed to delete: ${err.message}`, show_alert: true });
+            }
+        } else if (data.startsWith("habit:")) {
+            const telegramIdNum = ctx.from.id;
+            const profile = await getUserProfile(telegramIdNum);
+            const habits = normalizeHabits(profile.prefs);
+            if (!habits.length) {
+                await ctx.answerCallbackQuery({ text: "No habits set yet.", show_alert: true });
+                return;
+            }
+
+            const match = data.match(/^habit:(done|add|snooze)(?::(\d+))?$/);
+            if (!match) {
+                await ctx.answerCallbackQuery();
+                return;
+            }
+            const action = match[1];
+            const idx = Math.min(Number(match[2] ?? 0), habits.length - 1);
+            const habit = habits[idx];
+            const key = habit.name.toLowerCase();
+            const log = (profile.prefs as any)?.habitLog || {};
+            const today = new Date().toISOString().slice(0, 10);
+            const entry = log[key] && log[key].date === today
+                ? log[key]
+                : { date: today, total: 0, lastDone: null };
+
+            if (action === "done") {
+                entry.lastDone = new Date().toISOString();
+                entry.total = entry.total || 0;
+                log[key] = entry;
+                const prefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+                (prefs as any).habitLog = log;
+                await updateUserProfile(telegramIdNum, { prefs });
+                await ctx.answerCallbackQuery({ text: `✅ Marked "${habit.name}" as done today.` });
+            } else if (action === "add") {
+                const unit = habit.unit?.toLowerCase() || "";
+                const increment = unit.includes("min") ? 15 : 1;
+                entry.total = (entry.total || 0) + increment;
+                entry.date = today;
+                log[key] = entry;
+                const prefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+                (prefs as any).habitLog = log;
+                await updateUserProfile(telegramIdNum, { prefs });
+                await ctx.answerCallbackQuery({ text: `Logged +${increment}${habit.unit ? " " + habit.unit : ""} for "${habit.name}".` });
+            } else if (action === "snooze") {
+                await ctx.answerCallbackQuery({ text: "Snoozed for now." });
+            } else {
+                await ctx.answerCallbackQuery();
             }
         } else {
             await ctx.answerCallbackQuery(); // acknowledge unknown

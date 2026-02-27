@@ -580,6 +580,14 @@ export async function handleText(
 ): Promise<string> {
     const userId = String(ctx.from!.id);
 
+    // Heuristic guardrails: only trigger X inbox flows when the message clearly mentions X/DMS/mentions.
+    // This prevents unrelated requests (e.g., "summarize this article") from being misrouted to the butler.
+    const lower = userMessage.toLowerCase();
+    const hasDMKeyword = /\b(dm|dms|direct message|inbox|messages?|msgs?)\b/.test(lower);
+    const hasMentionKeyword = /\b(mention|mentions|reply|replies|tagged|tags|notification|notifications?|notifs?)\b/.test(lower);
+    const hasXContext = /\b(twitter|x\.com|tweet|timeline|feed|on x|on twitter)\b/.test(lower);
+    const hasAnyButlerCue = hasDMKeyword || hasMentionKeyword || hasXContext;
+
     // Track activity for butler background watcher
     recordActivity(userId);
 
@@ -626,36 +634,40 @@ export async function handleText(
     }
 
     // 0c. DM search intent — MUST run before general butler check.
-    //     "bring up dms from sage" is a search, not a general fetch.
-    //     Specific always wins over general.
+    //     Only run when the text hints at DMs/inbox to avoid hijacking unrelated asks.
     try {
-        const searchIntent = await detectDMSearchIntent(userMessage);
-        if (searchIntent.isSearch) {
-            return await runDMSearchReply(userId, ctx, searchIntent.query);
+        if (hasDMKeyword) {
+            const searchIntent = await detectDMSearchIntent(userMessage);
+            if (searchIntent.isSearch) {
+                return await runDMSearchReply(userId, ctx, searchIntent.query);
+            }
         }
     } catch (err) {
         console.warn("[textHandler] DM search intent check failed:", err);
     }
 
-    // 0d. Mention search intent — "that mention from bob", "find the mention about X"
-    //     Queries Pinecone for past mentions so the butler remembers across sessions.
+    // 0d. Mention search intent — only if the message actually references mentions/replies/X context.
     try {
-        const mentionSearchIntent = await detectMentionSearchIntent(userMessage);
-        if (mentionSearchIntent.isSearch) {
-            return await runMentionSearchReply(userId, ctx, mentionSearchIntent.query, mentionSearchIntent.impliedReply);
+        if (hasMentionKeyword || hasXContext) {
+            const mentionSearchIntent = await detectMentionSearchIntent(userMessage);
+            if (mentionSearchIntent.isSearch) {
+                return await runMentionSearchReply(userId, ctx, mentionSearchIntent.query, mentionSearchIntent.impliedReply);
+            }
         }
     } catch (err) {
         console.warn("[textHandler] Mention search intent check failed:", err);
     }
 
-    // 0d. General butler intent — catches broad X DM / mention queries
+    // 0d. General butler intent — only if the message contains X/DM/mention cues.
     try {
-        const butlerIntent = await detectButlerIntent(userMessage);
-        if (butlerIntent === "dms") {
-            return await runDMsReply(userId, ctx);
-        }
-        if (butlerIntent === "mentions") {
-            return await runMentionsReply(userId, ctx);
+        if (hasAnyButlerCue) {
+            const butlerIntent = await detectButlerIntent(userMessage);
+            if (butlerIntent === "dms") {
+                return await runDMsReply(userId, ctx);
+            }
+            if (butlerIntent === "mentions") {
+                return await runMentionsReply(userId, ctx);
+            }
         }
     } catch (err) {
         console.warn("[textHandler] Butler intent check failed:", err);

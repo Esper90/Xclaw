@@ -21,6 +21,10 @@ import "./claws/wire/tools/x_delete";
 import "./claws/wire/tools/x_profile";
 import "./claws/wire/tools/repurpose";
 import "./claws/wire/tools/thread_archaeologist";
+import "./claws/wire/tools/idea_generator";
+import "./claws/wire/tools/news_curator";
+import "./claws/wire/tools/network_booster";
+import "./claws/wire/tools/habit_tracker";
 
 import { bot, sessionMap } from "./claws/connect/bot";
 import { authMiddleware } from "./claws/connect/auth";
@@ -40,6 +44,8 @@ import { startGithubWatcher } from "./claws/watchers/githubWatcher";
 import { startIdeaGeneratorWatcher } from "./claws/watchers/ideaGenerator";
 import { startNewsCuratorWatcher } from "./claws/watchers/newsCurator";
 import { startFeedbackAnalyzerWatcher } from "./claws/watchers/feedbackAnalyzer";
+import { startNetworkBoosterWatcher } from "./claws/watchers/networkBooster";
+import { startHabitNudgerWatcher } from "./claws/watchers/habitNudger";
 
 async function main(): Promise<void> {
     console.log("🦾 Starting Xclaw...");
@@ -140,6 +146,18 @@ async function main(): Promise<void> {
     );
     // ── 6d7. Start feedback analyzer (weekly) ───────────────────────────────
     startFeedbackAnalyzerWatcher(
+        async (chatId, text, extra) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
+        }
+    );
+    // ── 6d8. Start network booster (weekly preview) ─────────────────────────
+    startNetworkBoosterWatcher(
+        async (chatId, text, extra) => {
+            await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
+        }
+    );
+    // ── 6d9. Start habit nudger (daily) ─────────────────────────────────────
+    startHabitNudgerWatcher(
         async (chatId, text, extra) => {
             await bot.api.sendMessage(chatId, text, { parse_mode: "Markdown", ...(extra ?? {}) });
         }
