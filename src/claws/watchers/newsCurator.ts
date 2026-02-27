@@ -63,6 +63,10 @@ export function startNewsCuratorWatcher(
                     try {
                         const raw = await performTavilySearch(query, 4);
                         bullets = formatNews(raw);
+                        // persist shared digest for brief reuse
+                        const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+                        (newPrefs as any).newsDigest = { topics, bullets, ts: Date.now() };
+                        await updateUserProfile(telegramId, { prefs: newPrefs });
                     } catch (err) {
                         note = "(search failed, using last saved topics if any)";
                         bullets = prevDigest ?? [];

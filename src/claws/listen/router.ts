@@ -1106,7 +1106,7 @@ ${buffer.join("\n")}`;
             const action = match[1];
             const idx = Math.min(Number(match[2] ?? 0), habits.length - 1);
             const habit = habits[idx];
-            const key = habit.name.toLowerCase();
+            const key = habit.name.trim().toLowerCase();
             const log = (profile.prefs as any)?.habitLog || {};
             const today = new Date().toISOString().slice(0, 10);
             const entry = log[key] && log[key].date === today
@@ -1123,7 +1123,7 @@ ${buffer.join("\n")}`;
                 await ctx.answerCallbackQuery({ text: `✅ Marked "${habit.name}" as done today.` });
             } else if (action === "add") {
                 const unit = habit.unit?.toLowerCase() || "";
-                const increment = unit.includes("min") ? 15 : 1;
+                const increment = unit.includes("min") ? 15 : unit.includes("h") ? 1 : 1;
                 entry.total = (entry.total || 0) + increment;
                 entry.date = today;
                 log[key] = entry;

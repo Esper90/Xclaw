@@ -3,6 +3,7 @@ import { listAllUsers } from "../../db/userStore";
 import { getUserProfile } from "../../db/profileStore";
 
 const CHECK_CRON = "15 17 * * *"; // daily 17:15 UTC
+const PAGE_SIZE = 4;
 
 function isQuiet(prefs: Record<string, any>): boolean {
     if ((prefs as any).quietAll) return true;
@@ -35,13 +36,15 @@ export function startHabitNudgerWatcher(
                 const log = (prefs as any)?.habitLog || {};
                 const today = new Date().toISOString().slice(0, 10);
 
-                const lines = habits.slice(0, 4).map((h: any, idx: number) => {
-                    const name = h.name || `Habit ${idx + 1}`;
+                const page = 0; // single page for now; extend with pagination callback if needed
+
+                const lines = habits.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE).map((h: any, idx: number) => {
+                    const name = h.name || `Habit ${page * PAGE_SIZE + idx + 1}`;
                     const target = h.targetPerDay ? ` (${h.targetPerDay}${h.unit ? " " + h.unit : ""}/day)` : "";
-                    const key = name.toLowerCase();
+                    const key = name.trim().toLowerCase();
                     const entry = log[key] && log[key].date === today ? log[key] : null;
                     const progress = entry ? ` — today: ${entry.total}${h.unit ? " " + h.unit : ""}` : "";
-                    return `${idx + 1}. ${name}${target}${progress}`;
+                    return `${page * PAGE_SIZE + idx + 1}. ${name}${target}${progress}`;
                 });
 
                 const message = [
@@ -54,11 +57,15 @@ export function startHabitNudgerWatcher(
                 ].filter(Boolean).join("\n");
 
                 const reply_markup = {
-                    inline_keyboard: habits.slice(0, 4).map((h: any, idx: number) => [
-                        { text: `Done (${idx + 1})`, callback_data: `habit:done:${idx}` },
-                        { text: `+15${(h.unit || "m").includes("min") ? "m" : ""}`, callback_data: `habit:add:${idx}` },
-                        { text: "Snooze", callback_data: `habit:snooze:${idx}` },
-                    ]),
+                    inline_keyboard: habits.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE).map((h: any, idx: number) => {
+                        const displayUnit = (h.unit || "min").toLowerCase();
+                        const addLabel = displayUnit.includes("h") ? "+1h" : displayUnit.includes("min") ? "+15m" : "+1";
+                        return [
+                            { text: `Done (${page * PAGE_SIZE + idx + 1})`, callback_data: `habit:done:${page * PAGE_SIZE + idx}` },
+                            { text: addLabel, callback_data: `habit:add:${page * PAGE_SIZE + idx}` },
+                            { text: "Snooze", callback_data: `habit:snooze:${page * PAGE_SIZE + idx}` },
+                        ];
+                    }),
                 };
 
                 try {
