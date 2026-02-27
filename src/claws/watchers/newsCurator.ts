@@ -6,6 +6,16 @@ import { checkAndConsumeTavilyBudget } from "../sense/apiBudget";
 
 const CHECK_CRON = "0 */1 * * *"; // global poll; per-user cadence enforced via prefs
 
+function isInQuietHours(prefs: Record<string, any>): boolean {
+    const start = Number(prefs.quietHoursStart);
+    const end = Number(prefs.quietHoursEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (start === end) return false; // zero window
+    const hour = new Date().getHours();
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end; // crosses midnight
+}
+
 function formatNews(raw: string): string[] {
     return raw
         .split(/\r?\n/)
@@ -37,6 +47,7 @@ export function startNewsCuratorWatcher(
                 const sinceLast = lastTs ? Date.now() - lastTs : Infinity;
                 if (intervalHours === 0) continue; // user disabled proactive news
                 if (sinceLast < intervalHours * 60 * 60 * 1000) continue;
+                if (isInQuietHours(prefs)) continue; // respect quiet hours
 
                 const query = `top news for ${topics.join(", ")} today, 3 concise bullets with sources`;
                 let bullets: string[] = [];

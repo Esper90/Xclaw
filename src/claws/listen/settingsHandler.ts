@@ -34,23 +34,24 @@ async function buildSettingsKeyboard(telegramId: number) {
 
     const keyboard = new InlineKeyboard()
         .text("🧭 Essentials", "settings:noop").row()
-        .text(`🧠 AI Provider: ${aiDisplay}`, "settings:toggle_ai").row()
-        .text(`🌍 Timezone: ${user.timezone || "Not Set"}`, "settings:set_timezone").row()
-        .text(`🔍 Tavily / day: ${tavilyLimit ?? "12 default"}`, "settings:set_tavily_limit").row()
-        .text(`⏳ News Cadence: ${newsCadenceHours ? `${newsCadenceHours}h` : "3h default"}`, "settings:set_news_cadence").row()
-        .text(`📰 News Topics: ${newsLabel}`, "settings:set_news_topics").row()
-        .text(`☀️ Weather: ${weatherLoc ? weatherLoc : "Not Set"}`, "settings:set_weather").row()
+        .text(`🧠 AI Provider: ${aiDisplay}`, "settings:toggle_ai").text("❓", "help:ai").row()
+        .text(`🌍 Timezone: ${user.timezone || "Not Set"}`, "settings:set_timezone").text("❓", "help:timezone").row()
+        .text(`🔍 Tavily / day: ${tavilyLimit ?? "12 default"}`, "settings:set_tavily_limit").text("❓", "help:tavily").row()
+        .text(`⏳ News Cadence: ${newsCadenceHours ? `${newsCadenceHours}h` : "3h default"}`, "settings:set_news_cadence").text("❓", "help:news_cadence").row()
+        .text(`📰 News Topics: ${newsLabel}`, "settings:set_news_topics").text("❓", "help:news_topics").row()
+        .text(`☀️ Weather: ${weatherLoc ? weatherLoc : "Not Set"}`, "settings:set_weather").text("❓", "help:weather").row()
+        .text(`🌙 Quiet Hours`, "settings:set_quiet_hours").text("❓", "help:quiet_hours").row()
         .text("📣 Signals & Safety", "settings:noop").row()
-        .text(`⭐ VIP List: ${vipLabel}`, "settings:set_vips").row()
-        .text(`📭 DM Allowlist: ${user.dm_allowlist ? "Custom" : "All/Default"}`, "settings:set_dm_allowlist").row()
-        .text(`📣 Mention Allowlist: ${user.mention_allowlist ? "Custom" : "All/Default"}`, "settings:set_mention_allowlist").row()
-        .text(`💓 Proactive Heartbeat: ${heartbeatStatus ? "ON" : "OFF"}`, "settings:toggle_heartbeat").row()
-        .text(`🧘 Vibe Cadence: ${vibeLabel}`, "settings:set_vibe_freq").row()
+        .text(`⭐ VIP List: ${vipLabel}`, "settings:set_vips").text("❓", "help:vips").row()
+        .text(`📭 DM Allowlist: ${user.dm_allowlist ? "Custom" : "All/Default"}`, "settings:set_dm_allowlist").text("❓", "help:dm_allow").row()
+        .text(`📣 Mention Allowlist: ${user.mention_allowlist ? "Custom" : "All/Default"}`, "settings:set_mention_allowlist").text("❓", "help:mention_allow").row()
+        .text(`💓 Proactive Heartbeat: ${heartbeatStatus ? "ON" : "OFF"}`, "settings:toggle_heartbeat").text("❓", "help:heartbeat").row()
+        .text(`🧘 Vibe Cadence: ${vibeLabel}`, "settings:set_vibe_freq").text("❓", "help:vibe").row()
         .text("🧵 Content & Work", "settings:noop").row()
-        .text(`🧠 Content Mode: ${contentMode ? "ON" : "OFF"}`, "settings:toggle_content_mode").row()
-        .text(`💡 Content Niche: ${contentNiche ? contentNiche : "Not Set"}`, "settings:set_content_niche").row()
-        .text(`🛍️ Wishlist: ${wishlistLabel}`, "settings:set_wishlist").row()
-        .text(`🛠️ GitHub Repos: ${reposLabel}`, "settings:set_repos").row()
+        .text(`🧠 Content Mode: ${contentMode ? "ON" : "OFF"}`, "settings:toggle_content_mode").text("❓", "help:content_mode").row()
+        .text(`💡 Content Niche: ${contentNiche ? contentNiche : "Not Set"}`, "settings:set_content_niche").text("❓", "help:content_niche").row()
+        .text(`🛍️ Wishlist: ${wishlistLabel}`, "settings:set_wishlist").text("❓", "help:wishlist").row()
+        .text(`🛠️ GitHub Repos: ${reposLabel}`, "settings:set_repos").text("❓", "help:repos").row()
         .text("ℹ️ Settings Guide", "settings:help").row();
 
     return keyboard;
@@ -92,6 +93,34 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
         return;
     }
 
+    if (data.startsWith("help:")) {
+        await ctx.answerCallbackQuery().catch(() => { });
+        const topic = data.slice("help:".length);
+        const helpText: Record<string, string> = {
+            ai: "Choose which model drafts responses. Switch if replies feel off-tone.",
+            timezone: "Needed so scheduled briefs and reminders fire at your local time.",
+            tavily: "Daily cap for live web searches. Lower = conserve quota; higher = fresher answers.",
+            news_cadence: "How often I fetch curated news. 0 disables proactive news; on-demand still works.",
+            news_topics: "Topics/feeds I track when curating news.",
+            weather: "Location for weather in briefs and vibe checks.",
+            quiet_hours: "Block proactive pings during a window (e.g., 22-7). On-demand commands still work.",
+            vips: "X handles I prioritize when scanning mentions/timeline.",
+            dm_allow: "Restrict DM alerts to these handles. Clear to allow all.",
+            mention_allow: "Restrict mention alerts to these handles. Clear to allow all.",
+            heartbeat: "Keeps proactive features alive. Turn off to pause automation.",
+            vibe: "How often I check in on you.",
+            content_mode: "When ON, I draft content and ideas proactively.",
+            content_niche: "Focus area for content drafting and ideas.",
+            wishlist: "Items to watch for deals/price drops.",
+            repos: "GitHub repos to watch for activity.",
+            guide: "Quick overview of all settings.",
+        };
+        const msg = helpText[topic] ?? "Quick tips not found for this setting.";
+        await ctx.reply(`ℹ️ ${msg}`, { parse_mode: "Markdown" });
+        if (topic === "guide") return;
+        return;
+    }
+
     if (data === "settings:help") {
         await ctx.answerCallbackQuery().catch(() => { });
         const cheatSheet =
@@ -101,7 +130,8 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
             "• Tavily / day: Max live web searches I’ll run for you. Lower = safer quota, higher = fresher results.\n" +
             "• News Cadence: How often I fetch curated news. 0 disables proactive news; you can still /news on-demand.\n" +
             "• News Topics: Feeds I track for you.\n" +
-            "• Weather: Location for briefs and vibes.\n\n" +
+            "• Weather: Location for briefs and vibes.\n" +
+            "• Quiet Hours: Mute proactive pings between two hours. On-demand commands still respond.\n\n" +
             "📣 Signals & Safety\n" +
             "• VIP List: X handles I watch closely.\n" +
             "• DM/Mention Allowlist: Limit alerts to these handles.\n" +
@@ -195,6 +225,13 @@ export async function handleSettingsCallback(ctx: BotContext, data: string) {
         ctx.session.awaitingSettingInput = "news_cadence";
         await ctx.answerCallbackQuery();
         await ctx.reply("⏳ How often should I fetch curated news? Enter hours as a number (e.g., `3`). Send `0` to disable proactive news.", { parse_mode: "Markdown" });
+        return;
+    }
+
+    if (data === "settings:set_quiet_hours") {
+        ctx.session.awaitingSettingInput = "quiet_hours";
+        await ctx.answerCallbackQuery();
+        await ctx.reply("🌙 Set quiet hours as `start-end` in 24h time (e.g., `22-7`). I’ll pause proactive pings in that window. Send `off` to disable.", { parse_mode: "Markdown" });
         return;
     }
 
@@ -356,6 +393,27 @@ export async function handleSettingTextInput(ctx: BotContext, text: string): Pro
             (newPrefs as any).newsFetchIntervalHours = num;
             await updateUserProfile(telegramId, { prefs: newPrefs });
             await ctx.reply(`✅ News cadence set to ${num === 0 ? "disabled" : `every ${num} hour(s)`}.`, { parse_mode: "Markdown" });
+        }
+        else if (settingType === "quiet_hours") {
+            const trimmed = text.trim();
+            const lower = trimmed.toLowerCase();
+            const newPrefs = { ...(profile.prefs || {}) } as Record<string, unknown>;
+            if (lower === "off" || lower === "none" || lower === "clear") {
+                delete (newPrefs as any).quietHoursStart;
+                delete (newPrefs as any).quietHoursEnd;
+                await updateUserProfile(telegramId, { prefs: newPrefs });
+                await ctx.reply("✅ Quiet hours disabled.", { parse_mode: "Markdown" });
+            } else {
+                const match = trimmed.match(/^(\d{1,2})\s*[-:]?\s*(\d{1,2})$/);
+                if (!match) throw new Error("Format must be start-end in 24h, e.g., 22-7.");
+                const start = Number(match[1]);
+                const end = Number(match[2]);
+                if (start < 0 || start > 23 || end < 0 || end > 23) throw new Error("Hours must be 0-23.");
+                (newPrefs as any).quietHoursStart = start;
+                (newPrefs as any).quietHoursEnd = end;
+                await updateUserProfile(telegramId, { prefs: newPrefs });
+                await ctx.reply(`✅ Quiet hours set: ${start}:00 to ${end}:00 (24h).`, { parse_mode: "Markdown" });
+            }
         }
         else if (settingType === "tavily_limit") {
             const num = parseInt(text.trim(), 10);
