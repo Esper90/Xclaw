@@ -13,6 +13,7 @@ import { upsertUser, deleteUser, getUser, getOrGeneratePineconeKey } from "../..
 import { deleteCachedProfile } from "../../db/xCacheStore";
 import { createReminder, deleteAllRemindersForUser } from "../../db/reminders";
 import { getUserProfile, updateUserProfile } from "../../db/profileStore";
+import { getUpcomingPostsForUser } from "../../db/scheduledPosts";
 import { invalidateUserXClient } from "../../db/getUserClient";
 import { registerAndSubscribeWebhook } from "../../x/webhookManager";
 import { config } from "../../config";
@@ -24,6 +25,18 @@ import { recordInteraction } from "../archive/buffer";
 
 const DM_LABELS = "ABCDEFGHIJKLMNOP".split("");
 const SENTINEL_LABELS = DM_LABELS;
+
+function formatLocalTime(iso: string, tz?: string | null): string {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz || "UTC",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+    });
+    return formatter.format(new Date(iso));
+}
 
 type HabitPref = { name: string; targetPerDay?: number; unit?: string };
 
@@ -139,6 +152,25 @@ export function registerRoutes(bot: import("grammy").Bot<BotContext>): void {
             `_Use /forget <topic> to delete specific memories._\n` +
             `_Use /forgetall to permanently wipe your entire memory bank._\n` +
             `_Your data is never sold, shared, or used for advertising._`,
+            { parse_mode: "Markdown" }
+        );
+    });
+
+    bot.command("scheduled", async (ctx) => {
+        const telegramId = ctx.from!.id;
+        const profile = await getUserProfile(telegramId).catch(() => null);
+        const tz = profile?.timezone;
+        const pending = await getUpcomingPostsForUser(telegramId);
+        if (!pending.length) {
+            await ctx.reply("No pending scheduled posts.");
+            return;
+        }
+
+        const lines = pending.map((p) => `• ${formatLocalTime(p.post_at, tz)} — ${p.text.slice(0, 120)}`);
+        await ctx.reply(
+            "🗓️ Scheduled posts (next 10):\n" +
+            lines.join("\n") +
+            `\n\nTimes shown in ${tz || "UTC"}.`,
             { parse_mode: "Markdown" }
         );
     });
