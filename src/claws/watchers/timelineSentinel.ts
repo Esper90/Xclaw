@@ -110,7 +110,8 @@ export function startTimelineSentinelWatcher(
                 }
 
                 const lastSeen = profile.lastTweetIds ?? {};
-                const lastRun = (profile.prefs as any)?.sentinelLastRun as number | undefined;
+                        await updateUserProfile(telegramId, { prefs: { ...(profile.prefs || {}), sentinelLastRun: Date.now() } });
+                        continue;
                 const newLastSeen: Record<string, string> = { ...lastSeen };
                 const digestItems: VipDigestItem[] = [];
 
@@ -140,7 +141,8 @@ export function startTimelineSentinelWatcher(
                         console.warn(`[timeline-sentinel] Failed handle ${handle} for ${telegramId}:`, err);
                     }
                 }
-
+                        await updateUserProfile(telegramId, { prefs: { ...(profile.prefs || {}), sentinelLastRun: Date.now() }, lastTweetIds: newLastSeen });
+                        continue;
                 const prefsPatch: Record<string, any> = { sentinelLastRun: Date.now() };
 
                 if (digestItems.length === 0) {

@@ -1,5 +1,17 @@
 import { getDueReminders, markRemindersCompleted } from "./reminders";
 import { isSupabaseConfigured } from "./userStore";
+import { getUserProfile } from "./profileStore";
+
+function isQuiet(prefs: Record<string, any>): boolean {
+    if ((prefs as any).quietAll) return true;
+    const start = Number(prefs.quietHoursStart);
+    const end = Number(prefs.quietHoursEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (start === end) return false;
+    const hour = new Date().getHours();
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end;
+}
 
 /**
  * Starts a background loop that checks Supabase every 60 seconds
@@ -27,6 +39,10 @@ export function startReminderWatcher(
 
             for (const reminder of dueReminders) {
                 try {
+                    const profile = await getUserProfile(reminder.user_id).catch(() => null);
+                    const prefs = (profile?.prefs || {}) as Record<string, any>;
+                    if (isQuiet(prefs)) continue;
+
                     await sendMessage(
                         reminder.user_id,
                         `⏰ *Reminder:*\n\n${reminder.text}`

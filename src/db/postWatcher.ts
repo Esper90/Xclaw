@@ -1,6 +1,18 @@
 import { getDueScheduledPosts, updateScheduledPostStatus } from "./scheduledPosts";
 import { isSupabaseConfigured } from "./userStore";
 import { postTweet } from "../claws/wire/xService";
+import { getUserProfile } from "./profileStore";
+
+function isQuiet(prefs: Record<string, any>): boolean {
+    if ((prefs as any).quietAll) return true;
+    const start = Number(prefs.quietHoursStart);
+    const end = Number(prefs.quietHoursEnd);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+    if (start === end) return false;
+    const hour = new Date().getHours();
+    if (start < end) return hour >= start && hour < end;
+    return hour >= start || hour < end;
+}
 
 /**
  * Starts a background loop that checks Supabase every 60 seconds
@@ -26,6 +38,10 @@ export function startPostWatcher(
 
             for (const post of duePosts) {
                 try {
+                    const profile = await getUserProfile(post.user_id).catch(() => null);
+                    const prefs = (profile?.prefs || {}) as Record<string, any>;
+                    if (isQuiet(prefs)) continue;
+
                     // Try to publish using the user's OAuth 1.0 credentials via xService
                     const xTweetId = await postTweet(post.text, post.user_id);
                     await updateScheduledPostStatus(post.id, 'posted');
