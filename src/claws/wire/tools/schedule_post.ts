@@ -1,6 +1,19 @@
 import { registry, type McpTool } from "./registry";
 import { createScheduledPost } from "../../../db/scheduledPosts";
+import { getUserProfile } from "../../../db/profileStore";
 import { SchemaType } from "@google/generative-ai";
+
+function formatLocal(iso: string, tz?: string | null): string {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz || "UTC",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        hour12: true,
+    });
+    return formatter.format(new Date(iso));
+}
 
 export const schedulePostTool: McpTool = {
     name: "schedule_post",
@@ -31,8 +44,11 @@ export const schedulePostTool: McpTool = {
         }
 
         try {
+            const profile = await getUserProfile(telegramId).catch(() => null);
+            const tz = profile?.timezone;
             const post = await createScheduledPost(telegramId, text, scheduledTime.toISOString());
-            return `Success! Tweet scheduled for ${scheduledTime.toISOString()} UTC.\nDatabase ID: ${post.id}\nContent: "${text}"`;
+            const localStamp = formatLocal(post.post_at, tz);
+            return `Success! Tweet scheduled for ${scheduledTime.toISOString()} UTC (local: ${localStamp}${tz ? " " + tz : ""}).\nDatabase ID: ${post.id}\nContent: "${text}"`;
         } catch (error: any) {
             return `Error scheduling post: ${error.message}`;
         }
