@@ -78,13 +78,15 @@ async function buildHeadlinesSection(
     const fresh = existing?.bullets && existing.bullets.length > 0 && typeof existing.ts === "number" && now - existing.ts < NEWS_CACHE_MAX_AGE_MS;
 
     if (fresh) {
-        return `Headlines (cached):\n${formatBulletList(existing!.bullets)}`;
+        const cached = existing!.bullets as string[];
+        return `Headlines (cached):\n${formatBulletList(cached)}`;
     }
 
     const budget = await checkAndConsumeTavilyBudget(telegramId);
     if (!budget.allowed) {
-        if (existing?.bullets?.length) {
-            return `Headlines (cached):\n${formatBulletList(existing.bullets)}\n_(live search skipped: ${budget.reason})_`;
+        const cached = existing?.bullets;
+        if (cached && cached.length) {
+            return `Headlines (cached):\n${formatBulletList(cached)}\n_(live search skipped: ${budget.reason})_`;
         }
         return `Headlines: Tavily limit hit (${budget.reason}).`;
     }
@@ -103,7 +105,8 @@ async function buildHeadlinesSection(
         return `Headlines:\n${formatBulletList(bullets)}`;
     } catch (err: any) {
         console.warn(`[daily-brief] Tavily failed for ${telegramId}:`, err);
-        if (existing?.bullets?.length) return `Headlines (cached):\n${formatBulletList(existing.bullets)}\n_(live search failed: ${err?.message ?? "error"})_`;
+        const cached = existing?.bullets;
+        if (cached && cached.length) return `Headlines (cached):\n${formatBulletList(cached)}\n_(live search failed: ${err?.message ?? "error"})_`;
         return `Headlines: search unavailable (${err?.message ?? "error"}).`;
     }
 }
