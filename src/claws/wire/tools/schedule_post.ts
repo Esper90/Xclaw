@@ -7,12 +7,15 @@ export const schedulePostTool: McpTool = {
     description: "Schedules a tweet to be published to the user's connected X (Twitter) account at a specific date and time.",
 
     async execute(args: Record<string, unknown>, context?: Record<string, unknown>) {
-        if (!context?.telegramId) {
+        const telegramId = (context as any)?.telegramId
+            ?? (context as any)?.userId
+            ?? (context as any)?.ctx?.from?.id;
+
+        if (!telegramId) {
             return "Error: telegramId is missing from context. Cannot schedule post.";
         }
 
         const { text, postAtIso } = args as { text: string; postAtIso: string };
-        const telegramId = context.telegramId as number;
 
         if (!text || !postAtIso) {
             return "Error: Both 'text' and 'postAtIso' are required to schedule a post.";
